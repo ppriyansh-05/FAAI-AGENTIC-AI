@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.streamlit/
+.build/
+.chart-data-*/
+.codex-finalizer/
+node_modules/
+*.log
+*.tmp
+assets/*.png
+!assets/.gitkeep
+

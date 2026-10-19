@@ -1,0 +1,12 @@
+flowchart LR
+    U[User or QA analyst] --> UI[Streamlit UI]
+    UI --> H[HTML input or synthetic sample page]
+    H --> P[Planner Orchestrator\nSelect supported checks]
+    P --> S[Scanner Agent\nDetect supported HTML signals]
+    S --> A[Standards Analyst\nMap findings to WCAG 2.2]
+    A --> F[Fix Recommendation Agent\nProvide implementation guidance]
+    F --> V[Validation Agent\nState automated boundary]
+    V --> C[Critic Agent\nCheck hand-off completeness]
+    C --> R[Severity report\nCSV export and human checklist]
+    W[WCAG rule knowledge] -. supports .-> A
+    V -. requires .-> HR[Human keyboard and screen-reader review]
