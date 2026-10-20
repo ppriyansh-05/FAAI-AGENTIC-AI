@@ -253,8 +253,15 @@ class EnhancedAccessibilityScanner:
                 ))
 
     def check_form_controls(self) -> None:
-        # Collect explicit label "for" targets
-        labels_for = {lbl.get("for") for lbl in self.soup.find_all("label") if lbl.get("for")}
+        # Collect all element IDs present in document
+        all_dom_ids = {tag.get("id") for tag in self.soup.find_all(True) if tag.get("id")}
+
+        # Collect explicit label "for" targets that point to existing IDs
+        labels_for_map = {}
+        for lbl in self.soup.find_all("label"):
+            target_for = lbl.get("for")
+            if target_for:
+                labels_for_map[target_for] = lbl
 
         for el in self.soup.find_all(["input", "select", "textarea"]):
             el_type = (el.get("type") or "text").lower()
@@ -262,17 +269,25 @@ class EnhancedAccessibilityScanner:
                 continue
 
             el_id = el.get("id")
-            has_explicit_label = el_id and el_id in labels_for
+            # Label exists AND associates with this element's id
+            has_explicit_label = el_id and el_id in labels_for_map
 
             # Check wrapping label: <label>...<input>...</label>
             has_wrapping_label = el.find_parent("label") is not None
 
             # Check ARIA accessible name attributes
             has_aria_label = bool(el.get("aria-label") and str(el.get("aria-label")).strip())
-            has_aria_labelledby = bool(el.get("aria-labelledby") and str(el.get("aria-labelledby")).strip())
+            
+            # Check aria-labelledby: the referenced ID(s) must actually exist in DOM
+            has_valid_labelledby = False
+            labelledby_attr = el.get("aria-labelledby")
+            if labelledby_attr and str(labelledby_attr).strip():
+                ref_ids = str(labelledby_attr).split()
+                has_valid_labelledby = all(ref_id in all_dom_ids for ref_id in ref_ids)
+
             has_title = bool(el.get("title") and str(el.get("title")).strip())
 
-            has_accessible_name = has_explicit_label or has_wrapping_label or has_aria_label or has_aria_labelledby or has_title
+            has_accessible_name = has_explicit_label or has_wrapping_label or has_aria_label or has_valid_labelledby or has_title
 
             if not has_accessible_name:
                 snippet = str(el)[:150]
