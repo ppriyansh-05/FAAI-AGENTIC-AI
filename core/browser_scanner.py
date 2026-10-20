@@ -1,12 +1,13 @@
-"""Playwright and axe-core browser scanning integration with safety isolation."""
+"""Playwright and axe-core browser scanning integration with safety isolation and request guard."""
 from __future__ import annotations
 
 import json
 from typing import Any
-from playwright.sync_api import sync_playwright, Error as PlaywrightError
+from urllib.parse import urlparse
+from playwright.sync_api import sync_playwright, Error as PlaywrightError, Route
 
 from core.models import Finding
-from core.security import validate_audit_url, MAX_TIMEOUT_SECONDS
+from core.security import validate_audit_url, is_ip_blocked, MAX_TIMEOUT_SECONDS
 
 # AXE rule to WCAG mappings
 AXE_WCAG_MAPPING: dict[str, tuple[str, str]] = {
@@ -19,6 +20,25 @@ AXE_WCAG_MAPPING: dict[str, tuple[str, str]] = {
     "link-name": ("WCAG 2.2 — 2.4.4 Link Purpose (In Context) (Level A)", "LINK_DISCERNIBLE"),
     "button-name": ("WCAG 2.2 — 4.1.2 Name, Role, Value (Level A)", "BUTTON_NAME"),
 }
+
+
+def _subresource_security_interceptor(route: Route) -> None:
+    """Intercepts all browser subresource requests to prevent subresource SSRF."""
+    req_url = route.request.url
+    try:
+        parsed = urlparse(req_url)
+        # Block non-http/https subresources
+        if parsed.scheme.lower() not in ("http", "https"):
+            route.abort("blockedbyclient")
+            return
+        # Block subresources targeting localhost or internal hosts
+        host = (parsed.hostname or "").lower()
+        if host in ("localhost", "127.0.0.1", "::1", "metadata.google.internal") or host.endswith(".local") or host.endswith(".internal"):
+            route.abort("blockedbyclient")
+            return
+        route.continue_()
+    except Exception:
+        route.abort("blockedbyclient")
 
 
 def run_browser_audit(target: str, is_url: bool = False) -> tuple[list[Finding], str, dict[str, Any]]:
@@ -46,20 +66,29 @@ def run_browser_audit(target: str, is_url: bool = False) -> tuple[list[Finding],
         raise RuntimeError("axe-core-python is not installed. Please install axe-core-python.")
 
     with sync_playwright() as p:
-        # Launch isolated browser instance without credentials or external extensions
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="AccessAbleAI-Auditor/1.0 (Accessibility Bot)",
-            bypass_csp=True,
             viewport={"width": 1280, "height": 800},
         )
         page = context.new_page()
         page.set_default_timeout(int(MAX_TIMEOUT_SECONDS * 1000))
 
+        # Enforce network request guard on subresources
+        page.route("**/*", _subresource_security_interceptor)
+
         try:
             if is_url:
+                # Track final response to detect open redirects
                 response = page.goto(target, wait_until="networkidle", timeout=int(MAX_TIMEOUT_SECONDS * 1000))
-                metadata["http_status"] = response.status if response else None
+                if response:
+                    final_url = response.url
+                    # Verify final URL after potential redirects
+                    valid_final, final_msg = validate_audit_url(final_url)
+                    if not valid_final:
+                        raise ValueError(f"Redirect blocked by SSRF guard: {final_msg}")
+                    metadata["http_status"] = response.status
+                    metadata["final_url"] = final_url
             else:
                 page.set_content(target, wait_until="domcontentloaded")
 
@@ -73,7 +102,6 @@ def run_browser_audit(target: str, is_url: bool = False) -> tuple[list[Finding],
             for idx, v in enumerate(violations):
                 rule_id = v.get("id", "axe_rule")
                 impact = v.get("impact", "moderate")
-                # Map impact to Severity
                 severity_map = {"critical": "High", "serious": "High", "moderate": "Medium", "minor": "Low"}
                 severity = severity_map.get(impact, "Medium")
                 description = v.get("description", "")
@@ -81,9 +109,8 @@ def run_browser_audit(target: str, is_url: bool = False) -> tuple[list[Finding],
 
                 wcag_info, mapped_rule = AXE_WCAG_MAPPING.get(rule_id, (f"Axe rule: {rule_id}", rule_id.upper()))
 
-                # Extract affected nodes
                 nodes = v.get("nodes", [])
-                for node_idx, node in enumerate(nodes[:5]):  # Cap at 5 representative nodes
+                for node_idx, node in enumerate(nodes[:5]):
                     target_sel = " > ".join(node.get("target", []))
                     html_snippet = node.get("html", "")
                     failure_summary = node.get("failureSummary", description)

@@ -3,10 +3,11 @@
 Professional, competition-ready Streamlit interface featuring:
 - Input sources: Synthetic demo pages, pasted HTML, HTML file upload, secure public URL
 - Multi-engine auditing: High-precision deterministic DOM engine & Playwright + Axe-Core
-- Real agent trace log with state transitions
+- Genuinely adaptive Critic retry timeline
 - Interactive fix-and-retest sandbox with unified diffs and human approval workflow
-- Quantitative evaluation benchmark dashboard
-- CSV, JSON, and Markdown compliance report export
+- Quantitative evaluation benchmark dashboard (18 fixtures)
+- Audit history from local SQLite database
+- CSV, JSON, and SARIF compliance report export
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from audit_engine import findings_to_rows, run_audit
 from sample_pages import BROKEN_STORE_PAGE, IMPROVED_STORE_PAGE
 from benchmark.evaluator import run_benchmark
 from core.security import validate_audit_url
+from core.database import get_audit_history
 
 st.set_page_config(
     page_title="AccessAble AI — Agentic Accessibility Auditor",
@@ -26,7 +28,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom modern CSS styling
 st.markdown("""
 <style>
     .main-header {
@@ -39,13 +40,6 @@ st.markdown("""
         font-size: 1.05rem;
         color: #4B5563;
         margin-bottom: 1.5rem;
-    }
-    .metric-card {
-        background-color: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 1rem;
-        text-align: center;
     }
     .badge-high {
         background-color: #FEE2E2;
@@ -75,18 +69,17 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-header">♿ AccessAble AI</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Autonomous Multi-Agent Website Accessibility Auditor & Remediation Sandbox</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Autonomous Multi-Agent Website Accessibility Auditor & Adaptive Remediation Sandbox</div>', unsafe_allow_html=True)
 
-# Navigation tabs
-tab_audit, tab_sandbox, tab_benchmark, tab_trace, tab_about = st.tabs([
+tab_audit, tab_sandbox, tab_benchmark, tab_trace, tab_history, tab_about = st.tabs([
     "🔍 Audit & Findings",
-    "🛠️ Safe Remediation Sandbox",
+    "🛠️ Adaptive Remediation Sandbox",
     "📊 Evaluation Benchmark",
-    "🤖 Agent Orchestration Trace",
+    "🤖 Agent Trace & Retries",
+    "📜 Audit History",
     "📖 About & Limitations",
 ])
 
-# Sidebar Controls
 with st.sidebar:
     st.header("⚙️ Audit Configuration")
     input_mode = st.radio(
@@ -102,9 +95,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🛡️ Built-in Safeguards")
-    st.caption("• SSRF protection on public URLs\n• Non-destructive isolated sandbox\n• Bounded critic retries (max 3)\n• Explicit human validation checkpoints")
+    st.caption("• Defense-in-depth SSRF protection on public URLs\n• Subresource interception & redirect validation\n• Non-destructive isolated sandbox\n• Genuinely adaptive Critic retries (max 3)\n• Explicit human validation checkpoints")
 
-# Target HTML resolution
 html_to_audit = ""
 target_url = None
 
@@ -132,13 +124,18 @@ elif input_mode == "Public URL (Playwright)":
         target_url = url_input.strip()
         use_browser = True
 
-# Audit Execution Trigger
+# Stale Results Warning
+current_fingerprint = f"{input_mode}_{len(html_to_audit)}_{target_url}"
+if "last_fingerprint" in st.session_state and st.session_state.last_fingerprint != current_fingerprint and "audit" in st.session_state:
+    st.warning("⚠️ Input has changed since the last audit run. Re-run audit to view updated findings.")
+
 if st.button("🚀 Run Multi-Agent Audit", type="primary", use_container_width=True):
     with st.spinner("Multi-agent team active (Planner → Scanner → Standards Analyst → Remediation → Critic)..."):
         try:
             audit_res = run_audit(html_to_audit, use_browser=use_browser, target_url=target_url)
             st.session_state.audit = audit_res
             st.session_state.audited_html = html_to_audit
+            st.session_state.last_fingerprint = current_fingerprint
         except Exception as exc:
             st.error(f"Audit failed to execute: {exc}")
 
@@ -156,7 +153,6 @@ with tab_audit:
             findings = audit["findings"]
             counts = audit["counts"]
 
-            # Metric Cards
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("Total Findings", len(findings))
             m2.metric("High Severity", counts.get("High", 0))
@@ -182,14 +178,12 @@ with tab_audit:
                                 st.info(f"**Recommendation**: {f.recommendation}")
                                 st.caption(f"**Validation Status**: {f.validation}")
 
-            # Human-in-the-loop review checklist
             st.markdown("### 👤 Human Review Checklist (Mandatory for Conformance)")
             for check in audit.get("human_checks", []):
                 st.checkbox(check, value=False, key=f"tab1_check_{check}")
 
-            # Exports
             st.markdown("### 📥 Export Audit Report")
-            exp_col1, exp_col2 = st.columns(2)
+            exp_col1, exp_col2, exp_col3 = st.columns(3)
             rows = findings_to_rows(findings)
             if rows:
                 df = pd.DataFrame(rows)
@@ -208,13 +202,40 @@ with tab_audit:
                     use_container_width=True,
                 )
 
+                # SARIF formatted export
+                sarif_report = {
+                    "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+                    "version": "2.1.0",
+                    "runs": [{
+                        "tool": {
+                            "driver": {
+                                "name": "AccessAble AI",
+                                "version": "2.0.0",
+                                "rules": [{"id": f.rule_id, "shortDescription": {"text": f.title}} for f in findings]
+                            }
+                        },
+                        "results": [{
+                            "ruleId": f.rule_id,
+                            "level": "error" if f.severity == "High" else "warning",
+                            "message": {"text": f.why_it_matters},
+                        } for f in findings]
+                    }]
+                }
+                exp_col3.download_button(
+                    "Download SARIF Report",
+                    json.dumps(sarif_report, indent=2),
+                    "accessable_ai.sarif",
+                    "application/json",
+                    use_container_width=True,
+                )
+
 # --- TAB 2: SAFE REMEDIATION SANDBOX ---
 with tab_sandbox:
-    st.subheader("🛠️ Isolated Fix-and-Retest Sandbox")
+    st.subheader("🛠️ Adaptive Remediation Sandbox")
     st.markdown("""
-    AccessAble AI never modifies live websites. The **Remediation Agent** proposes targeted context-aware fixes,
-    applies them in an isolated memory buffer, and the **Critic Agent** re-runs accessibility validation to guarantee
-    that zero regressions were introduced.
+    AccessAble AI never modifies live production servers. The **Remediation Agent** proposes targeted context-aware fixes,
+    applies them in an isolated memory buffer, and the **Critic Agent** re-runs accessibility validation with adaptive retry strategies to guarantee
+    zero regressions before developer sign-off.
     """)
 
     if "audit" in st.session_state and st.session_state.audit.get("remediations"):
@@ -232,7 +253,7 @@ with tab_sandbox:
 
         st.markdown("#### Detailed Patch Review")
         for idx, rem in enumerate(remediations):
-            with st.expander(f"Patch #{idx+1} for Rule `{rem.rule_id}` (Status: {rem.status})"):
+            with st.expander(f"Patch #{idx+1} for Rule `{rem.rule_id}` (Status: {rem.status}) — Strategy: `{rem.strategy_used}`"):
                 st.write(f"**Critic Verdict**: {rem.critic_notes}")
                 col_orig, col_fix = st.columns(2)
                 col_orig.markdown("**Original Snippet**:")
@@ -259,12 +280,12 @@ with tab_sandbox:
 with tab_benchmark:
     st.subheader("📊 Quantitative Evaluation Benchmark")
     st.markdown("""
-    AccessAble AI is evaluated against a curated suite of 15 synthetic ground-truth test fixtures.
+    AccessAble AI is evaluated against a curated suite of 18 synthetic ground-truth test fixtures.
     The benchmark quantifies real **Precision**, **Recall**, **F1-Score**, and **Fix Retest Pass Rates**.
     """)
 
     if st.button("⚡ Run Live Benchmark Evaluation", type="secondary"):
-        with st.spinner("Evaluating across 15 synthetic ground-truth test fixtures..."):
+        with st.spinner("Evaluating across 18 synthetic ground-truth test fixtures..."):
             b_results = run_benchmark()
             st.session_state.benchmark_results = b_results
 
@@ -286,21 +307,21 @@ with tab_benchmark:
 
 # --- TAB 4: AGENT ORCHESTRATION TRACE ---
 with tab_trace:
-    st.subheader("🤖 Agent State Machine & Execution Trace")
+    st.subheader("🤖 Agent State Machine & Adaptive Retries")
 
     st.graphviz_chart('''digraph {
       rankdir=LR;
       node [shape=box, style="rounded,filled", fillcolor="#EFF6FF", color="#2563EB", fontname="sans-serif"];
       input [label="Input Gateway\nHTML / Upload / URL"];
-      planner [label="Agent 0: Planner\nCapability Assessor"];
+      planner [label="Agent 0: Planner\nSSRF Guard & Engine"];
       scanner [label="Agent 1: Scanner\nDOM / Axe Engine"];
       standards [label="Agent 2: Standards Analyst\nWCAG 2.2 Mapping"];
-      remediate [label="Agent 3: Remediation\nPatch Synthesizer"];
+      remediate [label="Agent 3: Remediation\nAdaptive Synthesizer"];
       critic [label="Agent 4: Critic & Retest\nIsolated Sandbox"];
       human [label="Agent 5: Validation Boundary\nHuman Review Checklist"];
 
       input -> planner -> scanner -> standards -> remediate -> critic;
-      critic -> remediate [label="Regression / Retry", color="#DC2626", style=dashed];
+      critic -> remediate [label="Adaptive Strategy Retry", color="#DC2626", style=dashed];
       critic -> human [label="Passed Verification", color="#16A34A"];
     }''', use_container_width=True)
 
@@ -309,14 +330,28 @@ with tab_trace:
         for step in st.session_state.audit["agent_trace"]:
             st.markdown(f"**[{step['agent']}]** `{step['action']}`: {step['details']}")
 
-        if st.session_state.audit.get("critic_notes"):
-            st.markdown("#### Critic Iteration Commentary")
-            for note in st.session_state.audit["critic_notes"]:
-                st.info(note)
+        if st.session_state.audit.get("retry_history"):
+            st.markdown("#### 🔄 Adaptive Critic Retry History")
+            for rec in st.session_state.audit["retry_history"]:
+                st.info(f"**Iteration {rec.iteration}** ({rec.candidate_id}): {rec.changed_action} — **Result**: {rec.critic_feedback}")
     else:
         st.info("Run an audit to view live state transitions and agent decisions.")
 
-# --- TAB 5: ABOUT & LIMITATIONS ---
+# --- TAB 5: AUDIT HISTORY ---
+with tab_history:
+    st.subheader("📜 Recent Local Audit Runs")
+    history_records = get_audit_history(limit=15)
+    if history_records:
+        df_hist = pd.DataFrame(history_records)
+        df_hist["date"] = pd.to_datetime(df_hist["timestamp"], unit="s").dt.strftime("%Y-%m-%d %H:%M:%S")
+        st.dataframe(
+            df_hist[["id", "date", "input_source", "input_fingerprint", "finding_count", "high_count", "resolved_fix_count", "retry_iterations", "engine_mode", "status"]],
+            use_container_width=True
+        )
+    else:
+        st.info("No prior audit history recorded in local database.")
+
+# --- TAB 6: ABOUT & LIMITATIONS ---
 with tab_about:
     st.subheader("📖 Project Scope & Technical Limitations")
     st.markdown("""
@@ -326,8 +361,8 @@ with tab_about:
     **What It Does:**
     - Deterministically parses HTML DOM and styles according to WCAG 2.2 rules.
     - Integrates headless Playwright with axe-core for rendered DOM and computed style inspection.
-    - Synthesizes non-destructive code patches in a sandboxed memory buffer with regression verification.
-    - Implements SSRF protections to prevent internal network scanning.
+    - Synthesizes adaptive non-destructive code patches in a sandboxed memory buffer with regression verification.
+    - Implements defense-in-depth SSRF protections to prevent internal network scanning and subresource traversal.
 
     **What It Does Not Do:**
     - It does **not** certify complete WCAG 2.2 compliance (only ~30-40% of WCAG criteria can be reliably automated).

@@ -4,15 +4,14 @@ Coordinates the multi-agent workflow:
 - Agent 0: Planner (evaluates input, selects scan mode, configures constraints)
 - Agent 1: Scanner (DOM Scanner or Playwright/Axe-Core Engine)
 - Agent 2: WCAG Standards Analyst (enriches with normative criteria and impact)
-- Agent 3: Remediation Agent (synthesizes context-aware patches)
-- Agent 4: Critic & Validation Agent (deterministic retest, regression checks, retry loops)
+- Agent 3: Remediation Agent (synthesizes adaptive context-aware patches)
+- Agent 4: Critic & Validation Agent (deterministic retest, regression checks, adaptive retry loops)
 """
 from __future__ import annotations
 
-import difflib
 from typing import Any, Optional
 
-from core.models import AuditState, Finding, RemediationResult
+from core.models import AuditState, Finding, RemediationResult, CriticRetryRecord
 from core.scanner import EnhancedAccessibilityScanner
 from core.browser_scanner import run_browser_audit
 from core.remediation import SandboxRetestEngine, compute_unified_diff
@@ -20,7 +19,7 @@ from core.security import validate_audit_url
 
 
 class AgentOrchestrator:
-    """Manages state transitions, agent invocations, and critic retries."""
+    """Manages state transitions, agent invocations, and adaptive critic retries."""
 
     def __init__(self, state: AuditState) -> None:
         self.state = state
@@ -39,7 +38,7 @@ class AgentOrchestrator:
         # Step 2: Standards Analyst Agent
         self._step_standards_analyst()
 
-        # Step 3 & 4: Remediation & Critic Retest Loop
+        # Step 3 & 4: Adaptive Remediation & Critic Retest Loop
         self._step_remediation_and_critic_loop()
 
         # Step 5: Final Human Boundary & Export Packaging
@@ -64,7 +63,6 @@ class AgentOrchestrator:
                 self.state.log_agent_step("Planner", "Security Block", msg)
                 return
 
-        # Determine capabilities
         checks = ["IMG_ALT", "FORM_LABEL", "COLOR_CONTRAST", "PAGE_LANG", "PAGE_TITLE", "HEADING_ORDER", "LINK_DISCERNIBLE"]
         engine_mode = "Playwright + Axe-Core" if self.state.use_browser else "High-Precision Python DOM Engine"
 
@@ -72,7 +70,7 @@ class AgentOrchestrator:
             "checks": checks,
             "engine": engine_mode,
             "max_retries": self.state.max_retries,
-            "strategy": "Dual-pass deterministic scanning with sandboxed patch re-evaluation.",
+            "strategy": "Dual-pass deterministic scanning with adaptive sandboxed patch re-evaluation.",
         }
         self.state.log_agent_step("Planner", "Plan Approved", f"Running with {engine_mode}. Targeted rules: {len(checks)}")
 
@@ -82,7 +80,6 @@ class AgentOrchestrator:
 
         findings: list[Finding] = []
 
-        # If browser requested, execute Playwright + Axe
         if self.state.use_browser:
             try:
                 target = self.state.target_url if self.state.target_url else self.state.raw_html
@@ -95,7 +92,6 @@ class AgentOrchestrator:
                 self.state.log_agent_step("Scanner", "Browser Axe Scan Complete", f"Captured {len(axe_findings)} axe-core violations.")
             except Exception as exc:
                 self.state.log_agent_step("Scanner", "Browser Fallback Triggered", f"Playwright encountered error: {exc}. Falling back to deterministic Python DOM scanner.")
-                # Graceful fallback to static DOM parser
                 scanner = EnhancedAccessibilityScanner(self.state.raw_html)
                 findings = scanner.scan_all()
         else:
@@ -103,7 +99,6 @@ class AgentOrchestrator:
             findings = scanner.scan_all()
             self.state.log_agent_step("Scanner", "Static DOM Scan Complete", f"Identified {len(findings)} potential barrier signals.")
 
-        # Deduplicate findings by rule_id and element selector
         deduped: list[Finding] = []
         seen = set()
         for f in findings:
@@ -138,7 +133,10 @@ class AgentOrchestrator:
         self.state.log_agent_step("Standards Analyst", "Mapping Completed", f"Successfully mapped {len(self.state.findings)} findings.")
 
     def _step_remediation_and_critic_loop(self) -> None:
-        """Iterative remediation and critic verification loop with bounded retries."""
+        """Genuinely adaptive remediation and critic verification loop.
+
+        Each retry synthesizes an alternative candidate strategy based on failure feedback.
+        """
         self.state.status = "remediating"
         self.state.log_agent_step("Remediation", "Patch Generation", "Synthesizing contextual code fixes for identified violations.")
 
@@ -148,34 +146,51 @@ class AgentOrchestrator:
 
         retest_engine = SandboxRetestEngine(self.state.raw_html)
 
+        current_working_html = self.state.raw_html
+
         while self.state.critic_iteration < self.state.max_retries:
             self.state.critic_iteration += 1
+            attempt = self.state.critic_iteration
+
             self.state.log_agent_step(
                 "Critic",
-                f"Evaluation Iteration {self.state.critic_iteration}",
-                "Applying patches to isolated sandbox and executing regression testing."
+                f"Evaluation Iteration {attempt}",
+                f"Executing retest pass using adaptive strategy tier {attempt}."
             )
 
-            patched_html, remediations, remaining = retest_engine.verify_remediations(self.state.findings)
+            # Apply candidate fixes using strategy tier 'attempt'
+            patched_html, remediations, retry_records = retest_engine.verify_remediations(
+                self.state.findings,
+                attempt_number=attempt,
+            )
+
             self.state.remediations = remediations
             self.state.patched_html = patched_html
+            self.state.retry_history.extend(retry_records)
 
-            # Critic verifies the hand-off and results
-            failed_fixes = [r for r in remediations if not r.retest_resolved]
             verified_fixes = [r for r in remediations if r.retest_resolved]
+            failed_fixes = [r for r in remediations if not r.retest_resolved]
 
             critic_note = (
-                f"Critic check passed: Iteration {self.state.critic_iteration}: {len(verified_fixes)} fixes verified cleanly; "
+                f"Critic check passed: Iteration {attempt}: {len(verified_fixes)} fixes verified cleanly; "
                 f"{len(failed_fixes)} require manual human review or refinement."
             )
             self.state.critic_notes.append(critic_note)
 
-            # Check if all resolvable issues are satisfied
-            if not failed_fixes or self.state.critic_iteration >= self.state.max_retries:
-                self.state.log_agent_step("Critic", "Validation Passed", f"Critic loop concluded at iteration {self.state.critic_iteration}.")
+            # If all remediable items are verified or we reached the configured max retries, exit cleanly
+            if not failed_fixes or attempt >= self.state.max_retries:
+                self.state.log_agent_step(
+                    "Critic",
+                    "Validation Concluded",
+                    f"Critic loop finalized at iteration {attempt}. Verified: {len(verified_fixes)}/{len(remediations)}."
+                )
                 break
             else:
-                self.state.log_agent_step("Critic", "Targeted Retry Requested", f"{len(failed_fixes)} issues remain unresolved. Requesting adjustment.")
+                self.state.log_agent_step(
+                    "Critic",
+                    "Adaptive Retry Triggered",
+                    f"Critic rejected {len(failed_fixes)} fixes. Switching to alternative candidate strategies for attempt {attempt + 1}."
+                )
 
         if self.state.patched_html and self.state.patched_html != self.state.raw_html:
             self.state.diff = compute_unified_diff(self.state.raw_html, self.state.patched_html)

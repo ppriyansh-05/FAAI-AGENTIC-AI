@@ -1,8 +1,35 @@
-"""Data models, finding schemas, and rule specifications for AccessAble AI."""
+"""Structured types and data contracts for AccessAble AI multi-agent auditor."""
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
+from enum import Enum
 from typing import Any, Optional
+
+
+class Severity(str, Enum):
+    HIGH = "High"
+    MEDIUM = "Medium"
+    LOW = "Low"
+
+
+class EngineType(str, Enum):
+    CUSTOM_PYTHON = "custom_python"
+    AXE_CORE = "axe_core"
+
+
+class ValidationStatus(str, Enum):
+    DETECTED = "detected"
+    VERIFIED_FIXED = "verified_fixed"
+    UNRESOLVED = "unresolved"
+    REGRESSION = "regression"
+    INCONCLUSIVE = "inconclusive"
+
+
+class CriticDecisionType(str, Enum):
+    ACCEPT = "accept"
+    RETRY_REMEDIATION = "retry_remediation"
+    ESCALATE_HUMAN = "escalate_human"
+    STOP_MAX_RETRIES = "stop_max_retries"
 
 
 @dataclass
@@ -23,10 +50,21 @@ class Finding:
     requires_human_review: bool = True  # True if contextual judgment is needed
     confidence: float = 1.0  # Detection certainty score (0.0 to 1.0)
     engine: str = "custom_python"  # "custom_python" | "axe_core"
-    validation_status: str = "detected"  # "detected" | "verified_fixed" | "unresolved" | "regression"
+    validation_status: str = "detected"  # "detected" | "verified_fixed" | "unresolved" | "regression" | "inconclusive"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class RemediationCandidate:
+    candidate_id: str
+    strategy_name: str
+    target_rule: str
+    original_snippet: str
+    proposed_snippet: str
+    rationale: str
+    uncertainty_notes: Optional[str] = None
 
 
 @dataclass
@@ -39,6 +77,21 @@ class RemediationResult:
     diff: str = ""
     retest_resolved: bool = False
     critic_notes: str = ""
+    strategy_used: str = "standard_replacement"
+    candidate_id: str = ""
+
+
+@dataclass
+class CriticRetryRecord:
+    iteration: int
+    candidate_id: str
+    reason: str
+    critic_feedback: str
+    changed_action: str
+    before_finding_count: int
+    after_finding_count: int
+    regressions_detected: list[str] = field(default_factory=list)
+    resolved: bool = False
 
 
 @dataclass
@@ -50,13 +103,14 @@ class AuditState:
     plan: dict[str, Any] = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
     remediations: list[RemediationResult] = field(default_factory=list)
+    retry_history: list[CriticRetryRecord] = field(default_factory=list)
     patched_html: Optional[str] = None
     diff: str = ""
     critic_iteration: int = 0
     max_retries: int = 3
     critic_notes: list[str] = field(default_factory=list)
     human_checks: list[str] = field(default_factory=list)
-    status: str = "initialized"  # "initialized", "scanning", "analyzing", "remediating", "validating", "complete", "error"
+    status: str = "initialized"  # "initialized", "planning", "scanning", "analyzing", "remediating", "validating", "complete", "error"
     error_message: Optional[str] = None
     agent_trace: list[dict[str, Any]] = field(default_factory=list)
 

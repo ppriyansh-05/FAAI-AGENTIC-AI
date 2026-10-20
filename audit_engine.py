@@ -1,10 +1,12 @@
 """Backward compatibility bridge for legacy CA-3 imports and functions."""
 from __future__ import annotations
 
+import uuid
 from typing import Any
 from core.models import Finding, AuditState
 from core.orchestrator import AgentOrchestrator
 from core.scanner import calculate_contrast_ratio, EnhancedAccessibilityScanner
+from core.database import record_audit
 
 RULES = ("IMG_ALT", "FORM_LABEL", "PAGE_LANG", "PAGE_TITLE", "COLOR_CONTRAST", "HEADING_ORDER", "LINK_DISCERNIBLE")
 
@@ -41,6 +43,7 @@ def run_audit(html: str, use_browser: bool = False, target_url: str | None = Non
             "diff": "",
             "patched_html": None,
             "agent_trace": [],
+            "retry_history": [],
         }
 
     state = AuditState(
@@ -65,16 +68,38 @@ def run_audit(html: str, use_browser: bool = False, target_url: str | None = Non
             "diff": "",
             "patched_html": None,
             "agent_trace": result_state.agent_trace,
+            "retry_history": [],
         }
 
     counts = {level: sum(item.severity == level for item in result_state.findings) for level in ("High", "Medium", "Low")}
 
+    applied_count = sum(1 for r in result_state.remediations if r.retest_resolved)
+    audit_id = str(uuid.uuid4())[:8]
+
+    # Record to local SQLite database
+    try:
+        record_audit(
+            audit_id=audit_id,
+            input_source=result_state.input_source,
+            raw_html=result_state.raw_html,
+            finding_count=len(result_state.findings),
+            counts=counts,
+            resolved_fix_count=applied_count,
+            retry_iterations=result_state.critic_iteration,
+            engine_mode=result_state.plan.get("engine", "Python DOM"),
+            status=result_state.status,
+        )
+    except Exception:
+        pass
+
     return {
         "status": "complete",
+        "audit_id": audit_id,
         "message": "Audit completed successfully.",
         "plan": result_state.plan,
         "findings": result_state.findings,
         "remediations": result_state.remediations,
+        "retry_history": result_state.retry_history,
         "counts": counts,
         "human_checks": result_state.human_checks,
         "critic_notes": result_state.critic_notes,

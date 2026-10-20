@@ -8,6 +8,7 @@ __pycache__/
 node_modules/
 *.log
 *.tmp
+*.db
 assets/*.png
 !assets/.gitkeep
 

@@ -1,6 +1,7 @@
 """Comprehensive Synthetic Test Fixtures for AccessAble AI Benchmark.
 
 Each fixture is carefully labelled with ground-truth expected violations and rationale.
+Includes positive passes, edge cases, malformed HTML, and multi-barrier fixtures.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ FIXTURES: list[dict] = [
         "category": "edge_case_pass",
         "description": "Decorative image with empty alt attribute (WCAG Technique H67)",
         "html": '<!doctype html><html lang="en"><head><title>Test</title></head><body><img src="divider.png" alt=""></body></html>',
-        "expected_violations": set(),  # Must NOT report IMG_ALT!
+        "expected_violations": set(),
     },
     {
         "id": "fixture_03_aria_hidden_img",
@@ -130,5 +131,35 @@ FIXTURES: list[dict] = [
         "description": "Unclosed tags and unusual casing must not crash scanner",
         "html": '<HTML LANG="en"><HEAD><TITLE>OK</TITLE><BODY><P style="color: #111; background-color: #fff">Text<IMG SRC="sample.jpg"><INPUT TYPE="text" ID="test"><LABEL FOR="test">Test</LABEL>',
         "expected_violations": {"IMG_ALT"},
+    },
+    {
+        "id": "fixture_16_multi_violation_store",
+        "category": "complex_barrier",
+        "description": "Multiple simultaneous violations across images, forms, and contrast",
+        "html": '''<!doctype html>
+<html>
+<head><title>Store</title></head>
+<body>
+  <h1>Shop</h1>
+  <img src="item.jpg">
+  <input name="creditcard" type="text">
+  <p style="color: #888888; background-color: #ffffff">Discount terms apply.</p>
+</body>
+</html>''',
+        "expected_violations": {"PAGE_LANG", "IMG_ALT", "FORM_LABEL", "COLOR_CONTRAST"},
+    },
+    {
+        "id": "fixture_17_invalid_aria_labelledby_target",
+        "category": "edge_case_barrier",
+        "description": "aria-labelledby referencing a non-existent DOM ID",
+        "html": '<!doctype html><html lang="en"><head><title>Test</title></head><body><form><input id="email" aria-labelledby="non_existent_id"></form></body></html>',
+        "expected_violations": {"FORM_LABEL"},
+    },
+    {
+        "id": "fixture_18_rgba_contrast_boundary",
+        "category": "contrast_precision",
+        "description": "RGBA translucent black text on white background meeting 4.5:1 requirement",
+        "html": '<!doctype html><html lang="en"><head><title>Test</title></head><body><p style="color: rgba(0, 0, 0, 0.85); background-color: #ffffff">High contrast text</p></body></html>',
+        "expected_violations": set(),
     },
 ]
