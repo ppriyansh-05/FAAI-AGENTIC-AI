@@ -1,31 +1,54 @@
-# AccessAble AI — Architecture Diagram
+# AccessAble AI — Architecture & Agent Orchestration
+
+AccessAble AI is an autonomous, multi-agent accessibility auditing and remediation engine built to detect Web Content Accessibility Guidelines (WCAG 2.2) barriers and synthesize verified, non-destructive code patches.
 
 ```mermaid
-flowchart LR
-    U[User / QA analyst] --> UI[Streamlit UI]
-    UI --> H[HTML input\nSynthetic demo or pasted page]
-    H --> P[Planner Orchestrator\nSelect supported deterministic checks]
-    P --> S[Scanner Agent\nParse HTML and detect rule signals]
-    S --> A[Standards Analyst Agent\nMap signals to WCAG 2.2]
-    A --> F[Fix Recommendation Agent\nGive implementation guidance]
-    F --> V[Validation Agent\nSeparate automated checks from human review]
-    V --> C[Critic Agent\nCheck finding hand-off completeness]
-    C --> R[Severity-grouped report\nCSV export + human checklist]
-    R --> U
+flowchart TD
+    subgraph Input ["Input Gateway"]
+        U[User Interface / CI] --> InputChoice{Audit Source}
+        InputChoice -->|Static HTML / File| StaticSource[HTML File / Text]
+        InputChoice -->|Public Web URL| SecGuard[SSRF Security Firewall]
+    end
 
-    W[(W3C WCAG 2.2 rules)] -. rule knowledge .-> A
-    V -. requires .-> HR[Human testing\nKeyboard + screen reader + contextual review]
+    subgraph Orchestrator ["Agent State Machine"]
+        SecGuard --> Planner[Agent 0: Planner & Capability Assessor]
+        StaticSource --> Planner
+
+        Planner --> ScannerRouter{Scanner Engine}
+        ScannerRouter -->|DOM & Style Parse| PythonScanner[Agent 1A: Deterministic DOM Engine]
+        ScannerRouter -->|Full Rendered DOM| PlaywrightScanner[Agent 1B: Playwright + Axe-Core Engine]
+
+        PythonScanner --> Harmonizer[Signal Harmonizer & Deduplicator]
+        PlaywrightScanner --> Harmonizer
+
+        Harmonizer --> Standards[Agent 2: WCAG Standards Analyst]
+        Standards --> Remediation[Agent 3: Remediation Patch Synthesizer]
+
+        Remediation --> Sandbox[Agent 4: Isolated Sandbox Retester]
+        Sandbox --> CriticDecision{Critic: Clean Fix & Zero Regressions?}
+        
+        CriticDecision -->|Regression or Unresolved & Retries < 3| Remediation
+        CriticDecision -->|Verified Clean or Max Retries Hit| Validator[Agent 5: Validation Boundary]
+    end
+
+    subgraph Output ["Human-in-the-Loop & Delivery"]
+        Validator --> DiffView[Unified Before/After Code Diff]
+        Validator --> Checklist[Mandatory Human Review Checklist]
+        Validator --> Exports[CSV / JSON / HTML Report Export]
+    end
 ```
 
-## Agent hand-off contract
+## Agent Hand-Off Contracts
 
-| Agent | Receives | Produces | Decision |
+| Agent | Input State | Output State | Core Decision Logic |
 |---|---|---|---|
-| Planner Orchestrator | HTML | Supported check plan or empty-input status | Is there valid input and which deterministic checks apply? |
-| Scanner | HTML and plan | Structured rule signals | Which detectable barriers are present? |
-| Standards Analyst | Signals | WCAG criteria and rationale | Which accessibility standard applies? |
-| Fix Recommendation | Analysed findings | Concrete fix and code example | What should the developer change? |
-| Validation | Recommended findings | Automation status and human checklist | What can be verified automatically? |
-| Critic | Validated findings | Completeness notes | Does every reported finding have standards, fix and validation guidance? |
+| **Agent 0: Planner** | Input HTML or validated URL | Structured Execution Plan | Validates URL against SSRF firewall; selects optimal engine (Playwright vs. Python DOM). |
+| **Agent 1: Scanner** | HTML or live URL | Raw Finding Signals | Detects WCAG violations (missing alt, unlabelled forms, contrast, heading order, link text). |
+| **Agent 2: Standards Analyst** | Raw Finding Signals | Normative WCAG Mappings | Cross-references violations to specific WCAG 2.2 Success Criteria (1.1.1, 1.3.1, 1.4.3, 2.4.2, 2.4.4, 3.1.1). |
+| **Agent 3: Remediation Agent** | Normalized Findings | Proposed Replacement Patches | Synthesizes contextual code fixes for offending DOM nodes. |
+| **Agent 4: Critic & Retester** | Original HTML & Candidate Patches | Retest Results & Unified Diffs | Applies patch in isolated memory buffer; re-runs scanner; verifies resolution and flags new regressions. |
+| **Agent 5: Validation Boundary** | Verified Results | Human Checkpoints & Exports | Explicitly distinguishes automated checks from mandatory assistive tech human verification. |
 
-The agents are deterministic Python functions in this PoC so their work can be tested and demonstrated reliably. An LLM could later enrich recommendations, but should not replace rule-based validation or human judgement.
+## Defense in Depth: Security Model
+- **SSRF Protection**: Target URLs are validated using DNS pre-flight inspection against RFC 1918 private subnets, loopback addresses (`127.0.0.1`), link-local metadata endpoints (`169.254.169.254`), and non-HTTP protocols.
+- **Isolated Sandbox**: Fixes are never applied directly to production files or live servers; all patches are computed and verified within an isolated in-memory buffer.
