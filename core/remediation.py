@@ -101,17 +101,17 @@ class AdaptiveRemediationSynthesizer:
                 # Strategy 1: Contextual informative alt description
                 # Strategy 2: If previous attempt rejected or failed, synthesize clean decorative alt="" or aria-label
                 if attempt == 1:
-                    prop = orig.replace("<img", '<img alt="Informative illustration"')
+                    prop = orig.replace("<img", '<img alt="[PROPOSED: Describe image context]"')
                     candidates.append(RemediationCandidate(
                         candidate_id=f"img_cand_{attempt}",
-                        strategy_name="informative_alt_tag",
+                        strategy_name="informative_alt_placeholder",
                         target_rule="IMG_ALT",
                         original_snippet=orig,
                         proposed_snippet=prop,
                         rationale="Provide informative text alternative description.",
+                        uncertainty_notes="Image content and visual meaning cannot be established automatically. Human review is required to supply accurate description.",
                     ))
                 else:
-                    # Alternative strategy: aria-label if embedded inside button or decorative alt=""
                     prop = orig.replace("<img", '<img alt="" role="presentation"')
                     candidates.append(RemediationCandidate(
                         candidate_id=f"img_cand_{attempt}",
@@ -120,6 +120,7 @@ class AdaptiveRemediationSynthesizer:
                         original_snippet=orig,
                         proposed_snippet=prop,
                         rationale="Mark non-essential image as decorative per WCAG H67.",
+                        uncertainty_notes="Only select if the image is purely decorative, redundant, or purely stylistic.",
                     ))
 
         elif rule == "FORM_LABEL":

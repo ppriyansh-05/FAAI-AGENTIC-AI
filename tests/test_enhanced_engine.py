@@ -104,20 +104,35 @@ class EnhancedAuditEngineTests(unittest.TestCase):
         self.assertGreaterEqual(results["recall"], 0.95)
 
     def test_database_persistence(self):
-        init_db()
-        record_audit(
-            audit_id="test_run_123",
-            input_source="test_source",
-            raw_html="<html><body>test</body></html>",
-            finding_count=1,
-            counts={"High": 1, "Medium": 0, "Low": 0},
-            resolved_fix_count=1,
-            retry_iterations=1,
-            engine_mode="Python DOM",
-            status="complete",
-        )
-        history = get_audit_history(limit=5)
-        self.assertTrue(any(h["id"] == "test_run_123" for h in history))
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_db = Path(tmpdir) / "test_accessable.db"
+            init_db(db_path=temp_db)
+            record_audit(
+                audit_id="test_run_123",
+                input_source="test_source",
+                raw_html="<html><body>test</body></html>",
+                finding_count=1,
+                counts={"High": 1, "Medium": 0, "Low": 0},
+                resolved_fix_count=1,
+                retry_iterations=1,
+                engine_mode="Python DOM",
+                status="complete",
+                db_path=temp_db,
+            )
+            history = get_audit_history(limit=5, db_path=temp_db)
+            self.assertTrue(any(h["id"] == "test_run_123" for h in history))
+
+    def test_alpha_compositing_contrast(self):
+        # Semi-transparent black (rgba 0,0,0,0.85) on white should yield high contrast (> 4.5:1)
+        ratio = calculate_contrast_ratio("rgba(0, 0, 0, 0.85)", "#ffffff")
+        self.assertIsNotNone(ratio)
+        self.assertGreater(ratio, 4.5)
+
+        # Pure transparent background cannot be statically evaluated (indeterminate)
+        ratio_trans = calculate_contrast_ratio("#000000", "transparent")
+        self.assertIsNone(ratio_trans)
 
 
 if __name__ == "__main__":

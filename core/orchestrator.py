@@ -89,12 +89,16 @@ class AgentOrchestrator:
                     self.state.raw_html = rendered_dom
 
                 findings.extend(axe_findings)
+                self.state.plan["actual_engine"] = "Playwright + Axe-Core"
                 self.state.log_agent_step("Scanner", "Browser Axe Scan Complete", f"Captured {len(axe_findings)} axe-core violations.")
             except Exception as exc:
-                self.state.log_agent_step("Scanner", "Browser Fallback Triggered", f"Playwright encountered error: {exc}. Falling back to deterministic Python DOM scanner.")
+                self.state.plan["actual_engine"] = "Python DOM Fallback (Browser Failed)"
+                self.state.plan["browser_error"] = str(exc)
+                self.state.log_agent_step("Scanner", "Browser Fallback Triggered", f"Browser audit failed: {exc}. Resorted to static Python DOM inspection.")
                 scanner = EnhancedAccessibilityScanner(self.state.raw_html)
                 findings = scanner.scan_all()
         else:
+            self.state.plan["actual_engine"] = "High-Precision Python DOM Engine"
             scanner = EnhancedAccessibilityScanner(self.state.raw_html)
             findings = scanner.scan_all()
             self.state.log_agent_step("Scanner", "Static DOM Scan Complete", f"Identified {len(findings)} potential barrier signals.")

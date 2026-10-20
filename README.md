@@ -34,14 +34,14 @@ For complete state transitions and agent hand-off specifications, see [architect
 
 ## 📊 Benchmark Evaluation Results
 
-Evaluated across 15 synthetic, ground-truth labeled fixtures:
+Evaluated across 18 synthetic, ground-truth labeled fixtures:
 
 | Metric | Measured Score | Evaluation Notes |
 |---|---|---|
-| **Precision** | **100.00%** | Zero false positives on decorative `alt=""` and nested form labels |
-| **Recall** | **100.00%** | Accurately flagged all classic accessibility barriers |
+| **Precision** | **100.00%** | Zero false positives on decorative `alt=""`, nested labels, and translucent RGBA contrast |
+| **Recall** | **100.00%** | Accurately flagged all classic accessibility barriers across 18 test fixtures |
 | **F1-Score** | **1.0000** | Harmonic mean of precision and recall |
-| **Fix Retest Pass Rate**| **55.56%** | Automated patches verified clean; complex barriers flagged for human review |
+| **Fix Retest Pass Rate**| **35.71%** | 5 of 14 complex barriers cleanly resolved with zero regressions; remaining 9 safely flagged for human review |
 | **Execution Time** | **< 0.05s** | High-performance deterministic evaluation |
 
 ---

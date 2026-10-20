@@ -5,13 +5,14 @@ import hashlib
 import json
 import sqlite3
 import time
+import os
 from pathlib import Path
 from typing import Any, Optional
 
-DB_PATH = Path("accessable_ai.db")
+DEFAULT_DB_PATH = Path(os.environ.get("ACCESSABLE_DB_PATH", "accessable_ai.db"))
 
 
-def init_db(db_path: Path = DB_PATH) -> None:
+def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
     """Initialize audit history table."""
     with sqlite3.connect(db_path) as conn:
         conn.execute("""
@@ -43,7 +44,7 @@ def record_audit(
     retry_iterations: int,
     engine_mode: str,
     status: str,
-    db_path: Path = DB_PATH,
+    db_path: Path = DEFAULT_DB_PATH,
 ) -> None:
     """Records audit summary using cryptographic fingerprint instead of storing full raw HTML."""
     init_db(db_path)
@@ -73,7 +74,7 @@ def record_audit(
         conn.commit()
 
 
-def get_audit_history(limit: int = 20, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+def get_audit_history(limit: int = 20, db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
     """Returns recent audit runs."""
     init_db(db_path)
     with sqlite3.connect(db_path) as conn:

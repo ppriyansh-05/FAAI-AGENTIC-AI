@@ -124,10 +124,17 @@ elif input_mode == "Public URL (Playwright)":
         target_url = url_input.strip()
         use_browser = True
 
-# Stale Results Warning
-current_fingerprint = f"{input_mode}_{len(html_to_audit)}_{target_url}"
+# Stale Results Warning using cryptographic hash of all parameters
+import hashlib
+state_hasher = hashlib.sha256()
+state_hasher.update(input_mode.encode())
+state_hasher.update(str(use_browser).encode())
+state_hasher.update((target_url or "").encode())
+state_hasher.update(html_to_audit.encode(errors="ignore"))
+current_fingerprint = state_hasher.hexdigest()[:16]
+
 if "last_fingerprint" in st.session_state and st.session_state.last_fingerprint != current_fingerprint and "audit" in st.session_state:
-    st.warning("⚠️ Input has changed since the last audit run. Re-run audit to view updated findings.")
+    st.warning("⚠️ Input content or configuration has changed since the last audit run. Re-run audit to view updated findings.")
 
 if st.button("🚀 Run Multi-Agent Audit", type="primary", use_container_width=True):
     with st.spinner("Multi-agent team active (Planner → Scanner → Standards Analyst → Remediation → Critic)..."):

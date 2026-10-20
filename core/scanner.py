@@ -47,18 +47,21 @@ CSS_NAMED_COLORS: dict[str, tuple[int, int, int]] = {
     "aqua": (0, 255, 255),
     "fuchsia": (255, 0, 255),
     "lime": (0, 255, 0),
-    "transparent": (255, 255, 255),  # Fallback assumption for contrast
 }
 
 
-def parse_css_color(val: str) -> tuple[int, int, int] | None:
-    """Parse hex, rgb, rgba, hsl, or named color into RGB tuple."""
+def parse_css_color_with_alpha(val: str) -> tuple[int, int, int, float] | None:
+    """Parse hex, rgb, rgba, hsl, or named color into RGBA tuple (r, g, b, alpha)."""
     if not val or not isinstance(val, str):
         return None
     val = val.strip().lower()
 
+    if val == "transparent":
+        return (0, 0, 0, 0.0)
+
     if val in CSS_NAMED_COLORS:
-        return CSS_NAMED_COLORS[val]
+        r, g, b = CSS_NAMED_COLORS[val]
+        return (r, g, b, 1.0)
 
     # Hex: #fff or #ffffff
     hex_match = re.fullmatch(r"#([0-9a-f]{3}|[0-9a-f]{6})", val)
@@ -66,23 +69,34 @@ def parse_css_color(val: str) -> tuple[int, int, int] | None:
         c = hex_match.group(1)
         if len(c) == 3:
             c = "".join(ch * 2 for ch in c)
-        return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+        return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16), 1.0)
 
     # rgb(r, g, b) or rgba(r, g, b, a)
-    rgb_match = re.match(r"rgba?\s*\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})", val)
+    rgb_match = re.match(r"rgba?\s*\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*([0-9\.]+))?\s*\)", val)
     if rgb_match:
-        return (int(rgb_match.group(1)), int(rgb_match.group(2)), int(rgb_match.group(3)))
+        r, g, b = int(rgb_match.group(1)), int(rgb_match.group(2)), int(rgb_match.group(3))
+        alpha = float(rgb_match.group(4)) if rgb_match.group(4) is not None else 1.0
+        return (min(255, r), min(255, g), min(255, b), min(1.0, max(0.0, alpha)))
 
-    # hsl(h, s%, l%)
-    hsl_match = re.match(r"hsla?\s*\(\s*(\d{1,3}(?:\.\d+)?)\s*,\s*(\d{1,3}(?:\.\d+)?%)\s*,\s*(\d{1,3}(?:\.\d+)?%)", val)
+    # hsl(h, s%, l%) or hsla(h, s%, l%, a)
+    hsl_match = re.match(r"hsla?\s*\(\s*(\d{1,3}(?:\.\d+)?)\s*,\s*(\d{1,3}(?:\.\d+)?%)\s*,\s*(\d{1,3}(?:\.\d+)?%)(?:\s*,\s*([0-9\.]+))?\s*\)", val)
     if hsl_match:
         h = float(hsl_match.group(1)) / 360.0
         s = float(hsl_match.group(2).replace("%", "")) / 100.0
         l = float(hsl_match.group(3).replace("%", "")) / 100.0
+        alpha = float(hsl_match.group(4)) if hsl_match.group(4) is not None else 1.0
         r, g, b = colorsys.hls_to_rgb(h, l, s)
-        return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
+        return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)), min(1.0, max(0.0, alpha)))
 
     return None
+
+
+def parse_css_color(val: str) -> tuple[int, int, int] | None:
+    """Parse hex, rgb, rgba, hsl, or named color into RGB tuple (discards alpha)."""
+    rgba = parse_css_color_with_alpha(val)
+    if not rgba or rgba[3] == 0.0:
+        return None
+    return (rgba[0], rgba[1], rgba[2])
 
 
 def srgb_luminance(rgb: tuple[int, int, int]) -> float:
@@ -95,13 +109,30 @@ def srgb_luminance(rgb: tuple[int, int, int]) -> float:
 
 
 def calculate_contrast_ratio(fg_val: str, bg_val: str) -> float | None:
-    """Calculates contrast ratio (1.0 to 21.0) between two color definitions."""
-    fg = parse_css_color(fg_val)
-    bg = parse_css_color(bg_val)
-    if not fg or not bg:
+    """Calculates contrast ratio (1.0 to 21.0) with alpha compositing over solid background."""
+    fg_rgba = parse_css_color_with_alpha(fg_val)
+    bg_rgba = parse_css_color_with_alpha(bg_val)
+    if not fg_rgba or not bg_rgba:
         return None
-    l1 = max(srgb_luminance(fg), srgb_luminance(bg))
-    l2 = min(srgb_luminance(fg), srgb_luminance(bg))
+
+    # If background itself is transparent, contrast is indeterminate statically
+    if bg_rgba[3] < 1.0:
+        return None
+
+    bg_rgb = (bg_rgba[0], bg_rgba[1], bg_rgba[2])
+
+    # Alpha composite foreground onto background
+    alpha = fg_rgba[3]
+    if alpha < 1.0:
+        comp_r = int(round(fg_rgba[0] * alpha + bg_rgb[0] * (1.0 - alpha)))
+        comp_g = int(round(fg_rgba[1] * alpha + bg_rgb[1] * (1.0 - alpha)))
+        comp_b = int(round(fg_rgba[2] * alpha + bg_rgb[2] * (1.0 - alpha)))
+        fg_rgb = (comp_r, comp_g, comp_b)
+    else:
+        fg_rgb = (fg_rgba[0], fg_rgba[1], fg_rgba[2])
+
+    l1 = max(srgb_luminance(fg_rgb), srgb_luminance(bg_rgb))
+    l2 = min(srgb_luminance(fg_rgb), srgb_luminance(bg_rgb))
     return (l1 + 0.05) / (l2 + 0.05)
 
 
