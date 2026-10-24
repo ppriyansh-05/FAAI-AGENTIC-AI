@@ -64,7 +64,7 @@ Target fixes:
 Return ONLY a JSON array with one object per input, containing id, decision (ACCEPT or REVISE), wcag_alignment, and explanation.
 """
     try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, request_options={"timeout": 15})
         raw = (getattr(response, "text", "") or "").strip()
         if raw.startswith("```"): raw = raw.split("\n",1)[-1].rsplit("```",1)[0].strip()
         verdicts = json.loads(raw)
