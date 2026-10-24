@@ -1,558 +1,269 @@
-"""AccessAble AI -- Multi-Agent Website Accessibility Auditor
-
-Production-ready Streamlit dashboard featuring:
-- Premium dark glassmorphism UI with gradient accents
-- Input sources: Synthetic demo pages, pasted HTML, HTML file upload, secure public URL
-- Multi-engine auditing: High-precision deterministic DOM engine & Playwright + Axe-Core
-- True adaptive Critic retry state machine
-- Interactive fix-and-retest sandbox with unified diffs and human approval workflow
-- Quantitative evaluation benchmark dashboard (18 fixtures, 100% F1-Score)
-- Audit history from local SQLite database
-- CSV, JSON, and SARIF compliance report export
-"""
+"""AccessAble AI NiceGUI glassmorphism interface. Core audit logic remains in core/."""
 from __future__ import annotations
-
-import hashlib
-import json
-
-import pandas as pd
-import streamlit as st
-
+import csv, io, json, os
+from datetime import datetime
+from typing import Any
 from dotenv import load_dotenv
-
+from nicegui import ui
 load_dotenv()
-
 from audit_engine import findings_to_rows, run_audit
-from sample_pages import BROKEN_STORE_PAGE, IMPROVED_STORE_PAGE
 from benchmark.evaluator import run_benchmark
-from core.security import validate_audit_url
 from core.database import get_audit_history
 from core.gemini_critic import is_gemini_available
+from sample_pages import BROKEN_STORE_PAGE, IMPROVED_STORE_PAGE
 
-# Page config
-st.set_page_config(
-    page_title="AccessAble AI -- Agentic Accessibility Auditor",
-    page_icon="\u267f",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# Premium CSS Design System
-st.markdown("""
+ui.colors(primary="#8b5cf6", secondary="#22d3ee", accent="#a78bfa", dark="#080b16", positive="#34d399", negative="#fb7185", warning="#fbbf24")
+ui.add_head_html("""
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-  html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+:root{--bg:#080b16;--panel:rgba(17,24,43,.82);--line:rgba(148,163,184,.16);--muted:#94a3b8;--text:#eef2ff}
+html,body{background:radial-gradient(ellipse at 10% 0%,#211448 0,transparent 34%),radial-gradient(ellipse at 95% 12%,#0d3041 0,transparent 32%),var(--bg)!important;color:var(--text)!important;font-family:Inter,system-ui,sans-serif!important}
+.q-page{background:transparent!important}.glass{background:linear-gradient(135deg,rgba(24,31,54,.86),rgba(12,18,33,.82));border:1px solid var(--line);border-radius:20px;backdrop-filter:blur(18px);box-shadow:0 18px 55px rgba(0,0,0,.2)}
+.metric{padding:18px 20px;min-height:100px}.metric-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.12em;font-weight:700}.metric-value{font-size:30px;font-weight:800;letter-spacing:-.04em;margin-top:6px}
+.hero{font-size:clamp(30px,4vw,48px);font-weight:800;letter-spacing:-.055em;background:linear-gradient(100deg,#f8fafc 5%,#c4b5fd 45%,#67e8f9 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.muted{color:var(--muted)}.pill{display:inline-block;padding:4px 10px;border:1px solid var(--line);border-radius:999px;font-size:11px;color:#c4b5fd;background:rgba(139,92,246,.12)}
+.issue{padding:16px;border-radius:14px;background:rgba(255,255,255,.025);border:1px solid var(--line)}.q-field--outlined .q-field__control:before{border-color:rgba(148,163,184,.24)!important}.q-field__label,.q-field__native,.q-field__input{color:#e2e8f0!important}.q-tab{color:#94a3b8!important;font-weight:600}.q-tab--active{color:#c4b5fd!important}.q-tab__indicator{background:#a78bfa!important}.q-btn{border-radius:11px!important;font-weight:700!important}.q-table{background:transparent!important;color:#e2e8f0!important}.q-table thead tr{color:#a5b4fc!important}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>""")
+ui.page_title("AccessAble AI | Accessibility Command Center")
+ui.dark_mode().enable()
+state: dict[str, Any] = {"result": None, "filter": "All"}
 
-  .stApp {
-    background: linear-gradient(135deg, #0f0c29 0%, #12002e 40%, #0d1b2a 100%);
-    color: #e2e8f0;
-  }
-  [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0a0a1a 0%, #0d1b2a 100%);
-    border-right: 1px solid rgba(99,102,241,0.2);
-  }
-  [data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] label { color: #cbd5e1 !important; }
+def fv(item: Any, key: str, default: Any = "") -> Any:
+    return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
 
-  .hero-title {
-    font-size: 2.8rem; font-weight: 800;
-    background: linear-gradient(135deg, #818cf8 0%, #a78bfa 40%, #38bdf8 100%);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-    line-height: 1.1; letter-spacing: -0.02em; margin-bottom: 0.2rem;
-  }
-  .hero-subtitle { font-size: 1.05rem; color: #94a3b8; font-weight: 400; margin-bottom: 1.8rem; }
+def notify(message: str, kind: str = "info") -> None:
+    ui.notify(message, type=kind, position="top")
 
-  .pipeline-banner {
-    background: linear-gradient(90deg, rgba(99,102,241,0.12) 0%, rgba(56,189,248,0.08) 100%);
-    border: 1px solid rgba(99,102,241,0.25); border-radius: 12px;
-    padding: 0.75rem 1.25rem; margin-bottom: 1.5rem;
-    font-size: 0.88rem; color: #a5b4fc; font-weight: 500; text-align: center;
-  }
+def metric(label: str, value: Any, detail: str = "") -> None:
+    with ui.column().classes("glass metric flex-1 gap-0"):
+        ui.label(label).classes("metric-label")
+        ui.label(str(value)).classes("metric-value")
+        if detail: ui.label(detail).classes("muted text-xs")
 
-  [data-testid="metric-container"] {
-    background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(56,189,248,0.05) 100%);
-    border: 1px solid rgba(99,102,241,0.2); border-radius: 14px;
-    padding: 1rem 1.2rem; transition: border-color 0.25s ease, transform 0.2s ease;
-  }
-  [data-testid="metric-container"]:hover { border-color: rgba(99,102,241,0.5); transform: translateY(-2px); }
-  [data-testid="metric-container"] [data-testid="stMetricLabel"] {
-    color: #94a3b8 !important; font-size: 0.82rem !important; font-weight: 500 !important;
-    text-transform: uppercase; letter-spacing: 0.06em;
-  }
-  [data-testid="metric-container"] [data-testid="stMetricValue"] {
-    color: #e2e8f0 !important; font-size: 1.7rem !important; font-weight: 700 !important;
-  }
+def findings() -> list[Any]:
+    return (state.get("result") or {}).get("findings", []) or []
 
-  .badge-high {
-    display: inline-block;
-    background: linear-gradient(135deg, rgba(239,68,68,0.2), rgba(220,38,38,0.1));
-    border: 1px solid rgba(239,68,68,0.4); color: #fca5a5;
-    padding: 3px 10px; border-radius: 20px; font-weight: 600; font-size: 0.82rem;
-  }
-  .badge-medium {
-    display: inline-block;
-    background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(217,119,6,0.1));
-    border: 1px solid rgba(245,158,11,0.4); color: #fcd34d;
-    padding: 3px 10px; border-radius: 20px; font-weight: 600; font-size: 0.82rem;
-  }
-  .badge-low {
-    display: inline-block;
-    background: linear-gradient(135deg, rgba(99,102,241,0.2), rgba(139,92,246,0.1));
-    border: 1px solid rgba(99,102,241,0.4); color: #a5b4fc;
-    padding: 3px 10px; border-radius: 20px; font-weight: 600; font-size: 0.82rem;
-  }
+def render_findings() -> None:
+    findings_area.clear()
+    all_findings = findings()
+    shown = [f for f in all_findings if state["filter"] == "All" or fv(f, "severity") == state["filter"]]
+    with findings_area:
+        if not all_findings:
+            ui.label("Run an audit to inspect accessibility barriers.").classes("muted")
+            return
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label(f"{len(shown)} findings").classes("font-semibold")
+            ui.select(["All","High","Medium","Low"], value=state["filter"], label="Severity",
+                      on_change=lambda e: change_filter(e.value)).classes("w-40")
+        for f in shown:
+            level = str(fv(f,"severity","Low"))
+            color = {"High":"#fb7185","Medium":"#fbbf24","Low":"#67e8f9"}.get(level,"#94a3b8")
+            with ui.column().classes("issue w-full gap-2"):
+                with ui.row().classes("w-full items-center justify-between"):
+                    ui.label(str(fv(f,"title",fv(f,"rule_id","Accessibility issue")))).classes("font-bold")
+                    ui.label(level.upper()).style(f"color:{color};font-size:11px;font-weight:800")
+                ui.label(f"{fv(f,'rule_id')} · {fv(f,'wcag_criterion','WCAG criterion not specified')}").classes("muted text-xs")
+                ui.label(str(fv(f,"why_it_matters",""))).classes("text-sm")
+                with ui.expansion("Evidence and recommended fix").classes("w-full"):
+                    ui.label("Evidence").classes("text-xs font-bold muted")
+                    ui.code(str(fv(f,"evidence","")), language="html").classes("w-full")
+                    ui.label("Recommendation").classes("text-xs font-bold muted mt-2")
+                    ui.label(str(fv(f,"recommendation",""))).classes("text-sm")
+                    patch = fv(f,"remediation_patch","")
+                    if patch: ui.code(str(patch), language="html").classes("w-full")
 
-  .stTabs [data-baseweb="tab-list"] {
-    background: rgba(15,12,41,0.6); border-radius: 10px;
-    border: 1px solid rgba(99,102,241,0.15); padding: 4px; gap: 4px;
-  }
-  .stTabs [data-baseweb="tab"] { border-radius: 8px; color: #94a3b8; font-weight: 500; padding: 0.5rem 1rem; }
-  .stTabs [aria-selected="true"] {
-    background: linear-gradient(135deg, rgba(99,102,241,0.3), rgba(56,189,248,0.2)) !important;
-    color: #e2e8f0 !important; border: 1px solid rgba(99,102,241,0.3) !important;
-  }
+def change_filter(value: str) -> None:
+    state["filter"] = value
+    render_findings()
 
-  .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #6366f1 0%, #818cf8 50%, #38bdf8 100%) !important;
-    border: none !important; border-radius: 10px !important; color: white !important;
-    font-weight: 600 !important; font-size: 1rem !important; padding: 0.6rem 1.5rem !important;
-    box-shadow: 0 4px 20px rgba(99,102,241,0.35) !important;
-    transition: opacity 0.2s, transform 0.2s !important;
-  }
-  .stButton > button[kind="primary"]:hover { opacity: 0.9 !important; transform: translateY(-1px) !important; }
+def render_trace() -> None:
+    trace_area.clear()
+    trace = (state.get("result") or {}).get("agent_trace", []) or []
+    with trace_area:
+        if not trace:
+            ui.label("Agent trace appears after an audit.").classes("muted")
+            return
+        for i, item in enumerate(trace, 1):
+            with ui.row().classes("items-start w-full gap-3"):
+                ui.label(str(i)).classes("pill")
+                with ui.column().classes("gap-1 flex-1"):
+                    ui.label(str(fv(item,"agent",fv(item,"agent_name","Agent")))).classes("font-semibold")
+                    ui.label(str(fv(item,"action",fv(item,"step","")))).classes("text-sm")
+                    ui.label(str(fv(item,"detail",fv(item,"message","")))).classes("muted text-xs")
 
-  [data-testid="stExpander"] {
-    background: rgba(15,23,42,0.6) !important;
-    border: 1px solid rgba(99,102,241,0.15) !important; border-radius: 10px !important; margin-bottom: 0.6rem !important;
-  }
-  [data-testid="stExpander"]:hover { border-color: rgba(99,102,241,0.35) !important; }
-  hr { border-color: rgba(99,102,241,0.15) !important; }
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.3); border-radius: 3px; }
-</style>
-""", unsafe_allow_html=True)
+def render_remediation() -> None:
+    remediation_area.clear()
+    result = state.get("result") or {}
+    with remediation_area:
+        if not result:
+            ui.label("Run an audit to see proposed fixes and retest results.").classes("muted")
+            return
+        remediations = result.get("remediations", []) or []
+        if not remediations: ui.label("No remediation candidates generated.").classes("muted")
+        for rem in remediations:
+            with ui.column().classes("issue w-full gap-2"):
+                ui.label(f"{fv(rem,'rule_id','Fix')} · {'Verified' if fv(rem,'retest_resolved',False) else 'Human review / unresolved'}").classes("font-semibold")
+                ui.label(str(fv(rem,"critic_notes","No critic note recorded."))).classes("muted text-sm")
+                with ui.expansion("View proposed HTML change"):
+                    ui.code(str(fv(rem,"original_snippet","")), language="html").classes("w-full")
+                    ui.icon("arrow_downward", color="secondary")
+                    ui.code(str(fv(rem,"proposed_snippet","")), language="html").classes("w-full")
+        if result.get("diff"):
+            ui.label("Unified diff").classes("font-bold")
+            ui.code(str(result["diff"]), language="diff").classes("w-full")
+        for item in result.get("human_checks", []): ui.checkbox(str(item), value=False)
 
-# Hero Header
-st.markdown('<div class="hero-title">\u267f AccessAble AI</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="hero-subtitle">Autonomous Multi-Agent Website Accessibility Auditor &amp; Adaptive Remediation Sandbox</div>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<div class="pipeline-banner">'
-    '🤖 Agent Pipeline: '
-    '<b>Planner Agent</b> → <b>Scanner Agent</b> → <b>WCAG Analyst</b> → <b>Fix Recommender</b> → <b>Gemini Critic</b> → <b>Retest Validator</b>'
-    '</div>',
-    unsafe_allow_html=True,
-)
+async def run_audit() -> None:
+    source = source_select.value
+    target_url = url_input.value.strip() if source == "Public URL" else None
+    html = html_input.value or ""
+    if source == "Broken demo page": html = BROKEN_STORE_PAGE
+    elif source == "Improved demo page": html = IMPROVED_STORE_PAGE
+    elif source == "Uploaded HTML file": html = uploaded_html.value or ""
+    elif source == "Public URL":
+        html = ""
+        if not target_url:
+            notify("Enter a public website URL first.", "warning"); return
+    elif not html.strip():
+        notify("Paste HTML before running an audit.", "warning"); return
+    run_button.disable()
+    try:
+        result = await ui.run.io_bound(__import__("audit_engine").run_audit, html, bool(browser_toggle.value), target_url)
+        state["result"] = result
+        counts = result.get("counts") or {k: sum(fv(f,"severity")==k for f in result.get("findings",[])) for k in ["High","Medium","Low"]}
+        total_metric.set_text(str(len(result.get("findings",[]))))
+        high_metric.set_text(str(counts.get("High",0))); medium_metric.set_text(str(counts.get("Medium",0))); low_metric.set_text(str(counts.get("Low",0)))
+        audit_status.set_text(str(result.get("status","complete")).upper())
+        audit_id.set_text("Audit ID: " + str(result.get("audit_id","—")))
+        render_findings(); render_trace(); render_remediation()
+        notify("Audit completed." if result.get("status") != "error" else result.get("message","Audit failed."), "positive" if result.get("status") != "error" else "negative")
+    except Exception as exc:
+        notify(f"Audit failed: {exc}", "negative")
+    finally:
+        run_button.enable()
 
-# Tabs
-tab_audit, tab_sandbox, tab_benchmark, tab_trace, tab_history, tab_about = st.tabs([
-    "\U0001f50d Audit & Findings",
-    "\U0001f6e0\ufe0f Remediation Sandbox",
-    "\U0001f4ca Benchmark Evaluator",
-    "\U0001f916 Agent Trace",
-    "\U0001f4dc Audit History",
-    "\U0001f4d6 About & Scope",
-])
+def export_csv() -> None:
+    rows = findings_to_rows(findings())
+    if not rows: notify("Run an audit before exporting.", "warning"); return
+    output = io.StringIO(); writer = csv.DictWriter(output, fieldnames=list(rows[0].keys())); writer.writeheader(); writer.writerows(rows)
+    ui.download(output.getvalue().encode(), "accessable-findings.csv", "text/csv")
 
-# Sidebar
-with st.sidebar:
-    st.markdown("## \u2699\ufe0f Audit Configuration")
-    input_mode = st.radio(
-        "Input Source",
-        ["Synthetic Demo Page", "Paste Raw HTML", "Upload HTML File", "Public URL (Playwright)"],
-    )
-    use_browser = st.checkbox(
-        "\U0001f310 Headless Browser (Playwright + Axe-Core)",
-        value=False,
-        help="Loads the rendered DOM and runs axe-core rules in a Chromium sandbox.",
-    )
-    st.markdown("---")
-    st.markdown("### 🤖 Gemini Integration")
-    if is_gemini_available():
-        st.success("✨ **Gemini Critic**: Active (Google Gemini API)")
-    else:
-        st.warning("⚠️ **Gemini Critic**: Not Configured (Falling back to Deterministic)")
-    st.markdown("---")
-    st.markdown("### 🛡️ Built-in Safeguards")
-    st.markdown("""
-- 🔒 Defense-in-depth SSRF protection
-- 🌐 Subresource interception & redirect validation
-- 🧪 Non-destructive isolated sandbox
-- 🔄 Adaptive Critic retries (max 3)
-- 👤 Human validation checkpoints
-""")
-    st.markdown("---")
-    st.caption("AccessAble AI v2.0 · WCAG 2.2 · CA-3 Submission")
+def export_json() -> None:
+    result = state.get("result")
+    if not result: notify("Run an audit before exporting.", "warning"); return
+    safe = dict(result)
+    safe["findings"] = [f.to_dict() if hasattr(f,"to_dict") else f for f in result.get("findings",[])]
+    safe["remediations"] = [r.__dict__ if hasattr(r,"__dict__") else r for r in result.get("remediations",[])]
+    ui.download(json.dumps(safe, indent=2, default=str).encode(), "accessable-audit-report.json", "application/json")
 
-# Input Area
-html_to_audit = ""
-target_url = None
+with ui.row().classes("w-full items-center justify-between px-4 py-3"):
+    with ui.row().classes("items-center gap-3"):
+        with ui.element("div").classes("rounded-2xl p-3").style("background:linear-gradient(135deg,#7c3aed,#0891b2)"):
+            ui.icon("accessibility_new", size="28px", color="white")
+        with ui.column().classes("gap-0"):
+            ui.label("ACCESSABLE AI").classes("font-extrabold tracking-widest text-sm")
+            ui.label("MULTI-AGENT ACCESSIBILITY AUDITOR").classes("muted text-xs tracking-wider")
+    with ui.row().classes("items-center gap-2"):
+        ui.label("GEMINI CRITIC").classes("muted text-xs font-bold")
+        ui.label("CONFIGURED" if is_gemini_available() else "FALLBACK MODE").classes("pill")
+        ui.label("● SYSTEM READY").style("color:#34d399;font-size:11px;font-weight:800")
+ui.separator().classes("opacity-20")
+with ui.column().classes("w-full max-w-7xl mx-auto px-4 md:px-8 py-6 gap-6"):
+    ui.label("Accessibility, orchestrated.").classes("hero")
+    ui.label("Find barriers. Understand WCAG impact. Review safe fixes. Validate before you ship.").classes("muted text-base")
+    with ui.row().classes("w-full gap-2 flex-wrap"):
+        for name in ["PLANNER","SCANNER","WCAG ANALYST","FIX RECOMMENDER","GEMINI CRITIC","RETEST"]: ui.label(name).classes("pill")
+    with ui.tabs().classes("w-full") as tabs:
+        audit_tab=ui.tab("Audit workspace",icon="travel_explore")
+        remediation_tab=ui.tab("Remediation sandbox",icon="difference")
+        benchmark_tab=ui.tab("Benchmark",icon="query_stats")
+        trace_tab=ui.tab("Agent trace",icon="account_tree")
+        history_tab=ui.tab("Audit history",icon="history")
+        about_tab=ui.tab("About",icon="info")
+    with ui.tab_panels(tabs,value=audit_tab).classes("w-full bg-transparent"):
+        with ui.tab_panel(audit_tab):
+            with ui.row().classes("w-full items-stretch gap-4 flex-wrap"):
+                with ui.column().classes("glass p-5 gap-4").style("flex:1 1 320px"):
+                    ui.label("Configure an audit").classes("text-lg font-bold")
+                    source_select=ui.select(["Broken demo page","Improved demo page","Paste HTML","Uploaded HTML file","Public URL"],value="Broken demo page",label="Input source").classes("w-full")
+                    url_input=ui.input("Public website URL",placeholder="https://example.com").classes("w-full")
+                    html_input=ui.textarea("HTML source",placeholder="Paste page HTML here…").props("rows=8").classes("w-full")
+                    uploaded_html=ui.textarea("Uploaded HTML content",placeholder="Upload an .html file below").props("rows=3").classes("w-full")
+                    ui.upload(label="Upload HTML file",auto_upload=True,on_upload=lambda e:uploaded_html.set_value(e.content.read().decode("utf-8",errors="replace"))).props("accept=.html,.htm").classes("w-full")
+                    browser_toggle=ui.checkbox("Use browser + axe-core scan",value=False)
+                    run_button=ui.button("Run accessibility audit",icon="play_arrow",on_click=run_audit).props("color=primary unelevated").classes("w-full")
+                    ui.label("Public URL scans use the existing URL security checks.").classes("muted text-xs")
+                with ui.column().classes("gap-4").style("flex:2 1 500px"):
+                    with ui.row().classes("w-full gap-3 flex-wrap"):
+                        with ui.column().classes("glass metric flex-1").style("min-width:120px"):
+                            ui.label("TOTAL FINDINGS").classes("metric-label"); total_metric=ui.label("0").classes("metric-value")
+                        with ui.column().classes("glass metric flex-1").style("min-width:120px"):
+                            ui.label("HIGH SEVERITY").classes("metric-label"); high_metric=ui.label("0").classes("metric-value").style("color:#fb7185")
+                        with ui.column().classes("glass metric flex-1").style("min-width:120px"):
+                            ui.label("MEDIUM").classes("metric-label"); medium_metric=ui.label("0").classes("metric-value").style("color:#fbbf24")
+                        with ui.column().classes("glass metric flex-1").style("min-width:120px"):
+                            ui.label("LOW").classes("metric-label"); low_metric=ui.label("0").classes("metric-value").style("color:#67e8f9")
+                    with ui.column().classes("glass p-5 w-full gap-3"):
+                        with ui.row().classes("w-full items-center justify-between"):
+                            ui.label("Detected accessibility barriers").classes("text-lg font-bold"); audit_status=ui.label("READY").classes("pill")
+                        audit_id=ui.label("Audit ID: —").classes("muted text-xs")
+                        findings_area=ui.column().classes("w-full gap-3")
+                        with ui.row().classes("w-full gap-2 flex-wrap"):
+                            ui.button("Export findings CSV",icon="download",on_click=export_csv).props("outline color=secondary")
+                            ui.button("Export report JSON",icon="description",on_click=export_json).props("outline color=secondary")
+        with ui.tab_panel(remediation_tab):
+            with ui.column().classes("glass p-5 w-full gap-3"):
+                ui.label("Safe remediation sandbox").classes("text-xl font-bold")
+                ui.label("Review proposed changes, critic notes, retest status, and manual verification tasks. Automated checks do not replace assistive-technology testing.").classes("muted")
+                remediation_area=ui.column().classes("w-full gap-3")
+        with ui.tab_panel(benchmark_tab):
+            with ui.column().classes("glass p-5 w-full gap-4"):
+                ui.label("Quantitative benchmark").classes("text-xl font-bold")
+                ui.label("Run the ground-truth fixture suite against the deterministic scanner and remediation validator.").classes("muted")
+                benchmark_output=ui.column().classes("w-full gap-3")
+                async def run_benchmark_ui() -> None:
+                    benchmark_button.disable()
+                    try:
+                        report=await ui.run.io_bound(run_benchmark); benchmark_output.clear()
+                        with benchmark_output:
+                            with ui.row().classes("w-full gap-3 flex-wrap"):
+                                metric("Fixtures",report["total_fixtures"]); metric("Precision",f'{report["precision"]*100:.1f}%')
+                                metric("Recall",f'{report["recall"]*100:.1f}%'); metric("F1 score",f'{report["f1_score"]:.3f}')
+                                metric("Fix success",f'{report["fix_success_rate"]*100:.1f}%')
+                            ui.label(f'Execution time: {report["execution_time_seconds"]} seconds · Fixes: {report["total_fixes_succeeded"]}/{report["total_fixes_tested"]}').classes("muted text-sm")
+                            ui.table(columns=[{"name":"id","label":"Fixture","field":"id"},{"name":"category","label":"Category","field":"category"},{"name":"pass","label":"Exact match","field":"pass"},{"name":"tp","label":"TP","field":"tp"},{"name":"fp","label":"FP","field":"fp"},{"name":"fn","label":"FN","field":"fn"}],rows=report["fixture_results"],row_key="id").classes("w-full")
+                    except Exception as exc:
+                        benchmark_output.clear()
+                        with benchmark_output: ui.label(f"Benchmark failed: {exc}").style("color:#fb7185")
+                    finally: benchmark_button.enable()
+                benchmark_button=ui.button("Run benchmark suite",icon="play_circle",on_click=run_benchmark_ui).props("color=primary unelevated")
+        with ui.tab_panel(trace_tab):
+            with ui.column().classes("glass p-5 w-full gap-3"):
+                ui.label("Agent execution trace").classes("text-xl font-bold")
+                ui.label("Chronological steps recorded by the audit orchestrator.").classes("muted")
+                trace_area=ui.column().classes("w-full gap-3")
+        with ui.tab_panel(history_tab):
+            with ui.column().classes("glass p-5 w-full gap-3"):
+                ui.label("Recent audit history").classes("text-xl font-bold")
+                ui.label("Only audit summaries and input fingerprints are stored by the existing SQLite layer.").classes("muted")
+                history_table=ui.table(columns=[{"name":"timestamp","label":"Time","field":"timestamp"},{"name":"id","label":"Audit ID","field":"id"},{"name":"input_source","label":"Source","field":"input_source"},{"name":"finding_count","label":"Findings","field":"finding_count"},{"name":"high_count","label":"High","field":"high_count"},{"name":"medium_count","label":"Medium","field":"medium_count"},{"name":"low_count","label":"Low","field":"low_count"},{"name":"status","label":"Status","field":"status"}],rows=[],row_key="id").classes("w-full")
+                def refresh_history() -> None:
+                    rows=get_audit_history(50)
+                    for row in rows: row["timestamp"]=datetime.fromtimestamp(row["timestamp"]).strftime("%d %b %Y, %H:%M")
+                    history_table.rows=rows; history_table.update()
+                ui.button("Refresh history",icon="refresh",on_click=refresh_history).props("outline color=secondary")
+        with ui.tab_panel(about_tab):
+            with ui.column().classes("glass p-5 w-full gap-3"):
+                ui.label("About AccessAble AI").classes("text-xl font-bold")
+                ui.label("A multi-agent accessibility auditing prototype for common WCAG 2.2 barriers. Automated findings are not a certification of conformance.").classes("muted")
+                with ui.row().classes("w-full gap-3 flex-wrap"):
+                    metric("Standards","WCAG 2.2","Supported automated rules"); metric("Scan engines","DOM + axe","Browser engine is optional"); metric("Human review","Required","Keyboard and screen-reader checks")
+                for rule,desc in [("IMG_ALT","Text alternatives for non-text content."),("FORM_LABEL","Accessible names for form controls."),("COLOR_CONTRAST","Text contrast thresholds."),("PAGE_LANG","Document language."),("PAGE_TITLE","Descriptive page title."),("HEADING_ORDER","Meaningful heading structure."),("LINK_DISCERNIBLE","Link purpose and discernible text.")]:
+                    with ui.row().classes("items-start gap-3"): ui.label(rule).classes("pill"); ui.label(desc).classes("text-sm")
+                ui.label("Manual keyboard, screen-reader, and contextual testing remain necessary.").classes("muted text-sm mt-3")
 
-if input_mode == "Synthetic Demo Page":
-    sample = st.selectbox("Select demo fixture", ["Broken store page", "Improved store page", "Blank template"])
-    defaults = {
-        "Broken store page": BROKEN_STORE_PAGE,
-        "Improved store page": IMPROVED_STORE_PAGE,
-        "Blank template": '<!doctype html>\n<html lang="en">\n<head><title>Accessible Demo</title></head>\n<body>\n  <h1>Welcome</h1>\n</body>\n</html>',
-    }
-    html_to_audit = st.text_area("HTML Content", value=defaults[sample], height=220)
-
-elif input_mode == "Paste Raw HTML":
-    html_to_audit = st.text_area("Paste HTML source", height=250, placeholder="<!doctype html>...")
-
-elif input_mode == "Upload HTML File":
-    uploaded = st.file_uploader("Upload HTML file", type=["html", "htm"])
-    if uploaded:
-        html_to_audit = uploaded.read().decode("utf-8", errors="ignore")
-        st.success(f"\u2705 Loaded **{uploaded.name}** ({len(html_to_audit):,} bytes)")
-
-elif input_mode == "Public URL (Playwright)":
-    url_input = st.text_input(
-        "Enter public website URL (HTTPS only)",
-        placeholder="https://example.com",
-        help="SSRF-protected. Private IPs and cloud metadata endpoints are blocked.",
-    )
-    if url_input:
-        target_url = url_input.strip()
-        use_browser = True
-        valid, msg = validate_audit_url(target_url)
-        if valid:
-            st.success("\u2705 URL validated -- SSRF guard passed.")
-        else:
-            st.error(f"\U0001f6ab Security Block: {msg}")
-
-# Stale Results Warning
-state_hasher = hashlib.sha256()
-state_hasher.update(input_mode.encode())
-state_hasher.update(str(use_browser).encode())
-state_hasher.update((target_url or "").encode())
-state_hasher.update(html_to_audit.encode(errors="ignore"))
-current_fingerprint = state_hasher.hexdigest()[:16]
-
-if (
-    "last_fingerprint" in st.session_state
-    and st.session_state.last_fingerprint != current_fingerprint
-    and "audit" in st.session_state
-):
-    st.warning("\u26a0\ufe0f Input or configuration changed since last audit -- re-run to refresh results.")
-
-# Run Audit Button
-if st.button("\U0001f680 Run Multi-Agent Audit", type="primary", use_container_width=True):
-    with st.spinner("\U0001f916 Multi-agent team active: Planner \u2192 Scanner \u2192 Standards Analyst \u2192 Remediation \u2192 Critic..."):
-        try:
-            audit_res = run_audit(html_to_audit, use_browser=use_browser, target_url=target_url)
-            st.session_state.audit = audit_res
-            st.session_state.audited_html = html_to_audit
-            st.session_state.last_fingerprint = current_fingerprint
-        except Exception as exc:
-            st.error(f"\u274c Audit failed: {exc}")
-
-# TAB 1 -- AUDIT & FINDINGS
-with tab_audit:
-    if "audit" not in st.session_state:
-        st.info("\U0001f448 Select an input source in the sidebar and click **Run Multi-Agent Audit** to start.")
-    else:
-        audit = st.session_state.audit
-        if audit["status"] == "no_input":
-            st.warning(audit["message"])
-        elif audit["status"] == "error":
-            st.error(f"\u274c {audit['message']}")
-        else:
-            findings = audit["findings"]
-            counts = audit["counts"]
-
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("\U0001f4cb Total Findings", len(findings))
-            m2.metric("\U0001f534 High Severity", counts.get("High", 0))
-            m3.metric("\U0001f7e1 Medium Severity", counts.get("Medium", 0))
-            m4.metric("\U0001f535 Low Severity", counts.get("Low", 0))
-            m5.metric("\U0001f6e0\ufe0f Engine", audit["plan"].get("actual_engine", audit["plan"].get("engine", "Python DOM")))
-
-            st.markdown("---")
-
-            if not findings:
-                st.success(
-                    "\U0001f389 **No automated accessibility violations detected!**\n\n"
-                    "Manual assistive technology testing (screen readers, keyboard navigation) "
-                    "is still required for complete WCAG conformance."
-                )
-            else:
-                st.markdown("### \U0001f50d Findings by Severity")
-                for severity in ["High", "Medium", "Low"]:
-                    group = [f for f in findings if f.severity == severity]
-                    if group:
-                        badge_class = f"badge-{severity.lower()}"
-                        st.markdown(
-                            f"#### <span class=\'{badge_class}\'>{severity} Priority</span> &nbsp;({len(group)} findings)",
-                            unsafe_allow_html=True,
-                        )
-                        for f in group:
-                            with st.expander(f"**{f.rule_id}** -- {f.title}  |  Engine: `{f.engine}`"):
-                                col_a, col_b = st.columns([2, 1])
-                                with col_a:
-                                    st.markdown(f"**\U0001f4cc WCAG Criterion**: `{f.wcag_criterion}`")
-                                    st.markdown(f"**\U0001f4a1 Why It Matters**: {f.why_it_matters}")
-                                    st.markdown("**\U0001f50e Offending Element / Evidence**:")
-                                    st.code(f.evidence, language="html")
-                                with col_b:
-                                    st.info(f"**\U0001f527 Recommendation**\n\n{f.recommendation}")
-                                    st.caption(f"**Validation**: {f.validation}")
-
-            st.markdown("---")
-            st.markdown("### \U0001f464 Human Review Checklist *(Required for Full WCAG Conformance)*")
-            for check in audit.get("human_checks", []):
-                st.checkbox(check, value=False, key=f"tab1_check_{check[:40]}")
-
-            st.markdown("---")
-            st.markdown("### \U0001f4e5 Export Compliance Reports")
-            rows = findings_to_rows(findings)
-            if rows:
-                df = pd.DataFrame(rows)
-                exp_col1, exp_col2, exp_col3 = st.columns(3)
-                exp_col1.download_button(
-                    "\U0001f4c4 Download CSV",
-                    df.to_csv(index=False),
-                    "accessable_ai_report.csv",
-                    "text/csv",
-                    use_container_width=True,
-                )
-                exp_col2.download_button(
-                    "\U0001f4e6 Download JSON",
-                    json.dumps(rows, indent=2),
-                    "accessable_ai_report.json",
-                    "application/json",
-                    use_container_width=True,
-                )
-                sarif_report = {
-                    "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-                    "version": "2.1.0",
-                    "runs": [{
-                        "tool": {
-                            "driver": {
-                                "name": "AccessAble AI",
-                                "version": "2.0.0",
-                                "informationUri": "https://github.com/ppriyansh-05/FAAI-AGENTIC-AI",
-                                "rules": [{"id": f.rule_id, "shortDescription": {"text": f.title}} for f in findings],
-                            }
-                        },
-                        "results": [{
-                            "ruleId": f.rule_id,
-                            "level": "error" if f.severity == "High" else "warning",
-                            "message": {"text": f.why_it_matters},
-                        } for f in findings],
-                    }],
-                }
-                exp_col3.download_button(
-                    "\U0001f52c Download SARIF",
-                    json.dumps(sarif_report, indent=2),
-                    "accessable_ai.sarif",
-                    "application/json",
-                    use_container_width=True,
-                )
-            else:
-                st.caption("No violations to export.")
-
-# TAB 2 -- REMEDIATION SANDBOX
-with tab_sandbox:
-    st.subheader("\U0001f6e0\ufe0f Adaptive Remediation Sandbox")
-    st.markdown("""
-AccessAble AI **never modifies live production servers**. The Remediation Agent proposes targeted,
-context-aware code fixes applied to an isolated in-memory buffer. The Critic Agent then
-re-runs the accessibility scanner against the patched buffer -- guaranteeing **zero regressions**
-before any developer sign-off.
-""")
-
-    if "audit" in st.session_state and st.session_state.audit.get("remediations"):
-        remediations = st.session_state.audit["remediations"]
-        diff_text = st.session_state.audit.get("diff", "")
-
-        c1, c2 = st.columns(2)
-        applied_count = sum(1 for r in remediations if r.retest_resolved)
-        c1.metric("\u2705 Verified Resolved Fixes", applied_count)
-        c2.metric("\U0001f464 Flagged for Manual Review", len(remediations) - applied_count)
-
-        if diff_text:
-            st.markdown("---")
-            st.markdown("#### \U0001f504 Unified Diff -- Original vs. Patched Sandbox")
-            st.code(diff_text, language="diff")
-
-        st.markdown("---")
-        st.markdown("#### \U0001f4dd Patch Review -- Human Approval Workflow")
-        for idx, rem in enumerate(remediations):
-            status_icon = "\u2705" if rem.retest_resolved else "\u26a0\ufe0f"
-            with st.expander(f"{status_icon} Patch #{idx+1} \u00b7 Rule `{rem.rule_id}` \u00b7 Status: {rem.status} \u00b7 Strategy: `{rem.strategy_used}`"):
-                st.markdown(f"**\U0001f916 Critic Verdict**: {rem.critic_notes}")
-                col_orig, col_fix = st.columns(2)
-                col_orig.markdown("**\U0001f4c4 Original Snippet**")
-                col_orig.code(rem.original_snippet, language="html")
-                col_fix.markdown("**\U0001f527 Proposed Fix**")
-                col_fix.code(rem.proposed_snippet, language="html")
-                c_accept, c_reject = st.columns(2)
-                c_accept.checkbox(f"\u2705 Approve Fix #{idx+1}", value=rem.retest_resolved, key=f"approve_{rem.finding_id}")
-                c_reject.checkbox(f"\u274c Reject / Request Custom Edit #{idx+1}", value=not rem.retest_resolved, key=f"reject_{rem.finding_id}")
-
-        if st.session_state.audit.get("patched_html"):
-            st.markdown("---")
-            st.download_button(
-                "\U0001f4be Download Patched HTML",
-                st.session_state.audit["patched_html"],
-                "patched_page.html",
-                "text/html",
-                use_container_width=True,
-            )
-    else:
-        st.info("\U0001f50d Run an audit on a page with violations to inspect the remediation sandbox and before/after diffs.")
-
-# TAB 3 -- BENCHMARK
-with tab_benchmark:
-    st.subheader("\U0001f4ca Quantitative Evaluation Benchmark")
-    st.markdown("""
-AccessAble AI is evaluated against **18 synthetic, ground-truth labeled test fixtures** covering
-every implemented WCAG rule. The benchmark computes exact **Precision**, **Recall**, **F1-Score**,
-and **Fix Retest Pass Rates** -- not estimated or manually reported.
-""")
-
-    if st.button("\u26a1 Run Live Benchmark", type="secondary"):
-        with st.spinner("\U0001f4ca Evaluating across 18 ground-truth fixtures..."):
-            b_results = run_benchmark()
-            st.session_state.benchmark_results = b_results
-
-    if "benchmark_results" in st.session_state:
-        br = st.session_state.benchmark_results
-        st.markdown("---")
-        bc1, bc2, bc3, bc4, bc5 = st.columns(5)
-        bc1.metric("\U0001f4cb Fixtures Tested", br["total_fixtures"])
-        bc2.metric("\U0001f3af Precision", f"{br['precision'] * 100:.1f}%")
-        bc3.metric("\U0001f4e1 Recall", f"{br['recall'] * 100:.1f}%")
-        bc4.metric("\u26a1 F1-Score", f"{br['f1_score']:.4f}")
-        bc5.metric("\U0001f527 Fix Pass Rate", f"{br['fix_success_rate'] * 100:.1f}%")
-
-        st.markdown("---")
-        st.markdown("#### \U0001f4cb Fixture-Level Breakdown")
-        df_fixtures = pd.DataFrame(br["fixture_results"])
-        st.dataframe(
-            df_fixtures[["id", "category", "description", "pass", "tp", "fp", "fn"]],
-            use_container_width=True,
-        )
-        st.caption(
-            f"\u23f1\ufe0f Benchmark executed deterministically in **{br['execution_time_seconds']}s** "
-            f"\u00b7 TP: {br['true_positives']} \u00b7 FP: {br['false_positives']} \u00b7 FN: {br['false_negatives']}"
-        )
-    else:
-        st.info("Click **Run Live Benchmark** to execute the quantitative test suite.")
-
-# TAB 4 -- AGENT TRACE
-with tab_trace:
-    st.subheader("\U0001f916 Agent State Machine & Adaptive Retry Log")
-
-    st.graphviz_chart("""digraph {
-      rankdir=LR;
-      bgcolor="transparent";
-      node [shape=box, style="rounded,filled", fillcolor="#1e1b4b", color="#6366f1",
-            fontname="sans-serif", fontcolor="#e2e8f0", fontsize=11];
-      edge [color="#6366f1", fontcolor="#94a3b8", fontsize=9];
-      input     [label="Input Gateway\\nHTML / Upload / URL", fillcolor="#0f172a"];
-      planner   [label="Agent 0: Planner\\nSSRF Guard & Strategy"];
-      scanner   [label="Agent 1: Scanner\\nDOM / Axe-Core Engine"];
-      standards [label="Agent 2: Standards Analyst\\nWCAG 2.2 Mapping"];
-      remediate [label="Agent 3: Remediation\\nAdaptive Synthesizer"];
-      critic    [label="Agent 4: Critic & Retest\\nIsolated Sandbox"];
-      human     [label="Agent 5: Validation Boundary\\nHuman Review Checklist", fillcolor="#0c4a6e"];
-      input -> planner -> scanner -> standards -> remediate -> critic;
-      critic -> remediate [label="Adaptive Strategy Retry (max 3)", color="#ef4444", style=dashed];
-      critic -> human [label="Verified Clean", color="#22c55e"];
-    }""", use_container_width=True)
-
-    if "audit" in st.session_state and st.session_state.audit.get("agent_trace"):
-        st.markdown("---")
-        st.markdown("#### \U0001f4cb Live Execution Step Log")
-        icon_map = {
-            "Planner": "\U0001f9e0", "Scanner": "\U0001f50d",
-            "Standards Analyst": "\U0001f4da", "Remediation": "\U0001f527",
-            "Critic": "\u2696\ufe0f", "Validation Agent": "\U0001f464",
-        }
-        for step in st.session_state.audit["agent_trace"]:
-            icon = icon_map.get(step["agent"], "\U0001f916")
-            st.markdown(f"{icon} **[{step['agent']}]** `{step['action']}` -- {step['details']}")
-
-        if st.session_state.audit.get("retry_history"):
-            st.markdown("---")
-            st.markdown("#### \U0001f504 Adaptive Critic Retry History")
-            for rec in st.session_state.audit["retry_history"]:
-                st.info(
-                    f"**Iteration {rec.iteration}** (`{rec.candidate_id}`): "
-                    f"{rec.changed_action} \u2192 **Result**: {rec.critic_feedback}"
-                )
-    else:
-        st.info("\u25b6\ufe0f Run an audit to view live agent state transitions and retry decisions.")
-
-# TAB 5 -- AUDIT HISTORY
-with tab_history:
-    st.subheader("\U0001f4dc Local Audit History")
-    st.caption("Stored in local SQLite database -- persisted across sessions.")
-
-    col_refresh, _ = st.columns([1, 4])
-    if col_refresh.button("\U0001f504 Refresh History"):
-        st.rerun()
-
-    history_records = get_audit_history(limit=20)
-    if history_records:
-        df_hist = pd.DataFrame(history_records)
-        df_hist["date"] = pd.to_datetime(df_hist["timestamp"], unit="s").dt.strftime("%Y-%m-%d %H:%M:%S")
-        display_cols = [c for c in [
-            "id", "date", "input_source", "input_fingerprint",
-            "finding_count", "high_count", "resolved_fix_count",
-            "retry_iterations", "engine_mode", "status"
-        ] if c in df_hist.columns]
-        st.dataframe(df_hist[display_cols], use_container_width=True)
-    else:
-        st.info("\U0001f4ed No prior audits recorded. Run your first audit to populate history.")
-
-# TAB 6 -- ABOUT & SCOPE
-with tab_about:
-    st.subheader("\U0001f4d6 Project Scope & Technical Limitations")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("""
-### \u2705 What AccessAble AI Does
-- Deterministically parses HTML DOM according to **WCAG 2.2** rules using a high-precision Python engine.
-- Integrates **headless Playwright + axe-core** for rendered DOM and computed style inspection.
-- Synthesizes **adaptive, non-destructive code patches** in a sandboxed in-memory buffer.
-- Performs **Critic-driven regression verification** with adaptive multi-strategy retry loops (max 3).
-- Implements **defense-in-depth SSRF protection** to prevent internal network scanning.
-- Exports compliance reports as **CSV, JSON, and SARIF** formats.
-- Persists audit history in a **local SQLite database**.
-- Achieves **100% Precision, 100% Recall, F1-Score 1.0** on 18 ground-truth benchmark fixtures.
-""")
-    with col2:
-        st.markdown("""
-### \u26a0\ufe0f Honest Limitations
-- Automated tools detect approximately **30-40% of WCAG 2.2 criteria**.
-  The remaining requires manual expert review with real assistive technologies.
-- Does **not** certify complete WCAG 2.2 conformance.
-- Does **not** replace real assistive technology user testing
-  (screen readers like NVDA, VoiceOver, JAWS).
-- Does **not** silently overwrite live production servers -- all changes
-  require **explicit human approval**.
-- Browser audits require Playwright Chromium:
-  `python -m playwright install chromium`.
-""")
-
-    st.markdown("---")
-    st.markdown("""
-### \U0001f4d0 Architecture
-
-| Agent | Role |
-|-------|------|
-| **Agent 0 -- Planner** | Input validation, SSRF guard, engine selection, constraint configuration |
-| **Agent 1 -- Scanner** | Dual-mode: High-precision Python DOM engine OR headless Playwright + axe-core |
-| **Agent 2 -- Standards Analyst** | Maps each finding to normative WCAG 2.2 Success Criteria |
-| **Agent 3 -- Remediation** | Synthesizes context-aware, targeted code patches per finding |
-| **Agent 4 -- Critic & Retest** | Applies patches to isolated sandbox, validates zero regressions, adaptive retries |
-| **Agent 5 -- Validation Boundary** | Surfaces mandatory human-in-the-loop audit checkpoints |
-
-**Tech Stack**: Python 3.10 \u00b7 Streamlit \u00b7 BeautifulSoup4 \u00b7 Playwright \u00b7 axe-core \u00b7 SQLite \u00b7 SARIF \u00b7 GitHub Actions CI
-""")
-    st.caption("AccessAble AI v2.0 -- Foundations of Agentic AI CA-3 \u00b7 Priyansh Pandey")
+with findings_area: ui.label("Run an audit to inspect accessibility barriers.").classes("muted")
+with remediation_area: ui.label("Run an audit to see proposed fixes and retest results.").classes("muted")
+with trace_area: ui.label("Agent trace appears after an audit.").classes("muted")
+ui.run(host="0.0.0.0",port=int(os.environ.get("PORT","8080")),title="AccessAble AI",reload=False,show=False)
