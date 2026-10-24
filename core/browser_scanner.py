@@ -80,7 +80,7 @@ def run_browser_audit(target: str, is_url: bool = False) -> tuple[list[Finding],
         try:
             if is_url:
                 # Track final response to detect open redirects
-                response = page.goto(target, wait_until="networkidle", timeout=int(MAX_TIMEOUT_SECONDS * 1000))
+                response = page.goto(target, wait_until="domcontentloaded", timeout=min(int(MAX_TIMEOUT_SECONDS * 1000), 20000))
                 if response:
                     final_url = response.url
                     # Verify final URL after potential redirects
