@@ -18,11 +18,16 @@ import json
 import pandas as pd
 import streamlit as st
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from audit_engine import findings_to_rows, run_audit
 from sample_pages import BROKEN_STORE_PAGE, IMPROVED_STORE_PAGE
 from benchmark.evaluator import run_benchmark
 from core.security import validate_audit_url
 from core.database import get_audit_history
+from core.gemini_critic import is_gemini_available
 
 # Page config
 st.set_page_config(
@@ -134,8 +139,8 @@ st.markdown(
 )
 st.markdown(
     '<div class="pipeline-banner">'
-    '\U0001f916 Agent Pipeline: '
-    '<b>Planner</b> \u2192 <b>Scanner (DOM / Axe-Core)</b> \u2192 <b>WCAG Standards Analyst</b> \u2192 <b>Remediation</b> \u2192 <b>Critic Retest</b> \u2192 <b>Human Validation</b>'
+    '🤖 Agent Pipeline: '
+    '<b>Planner Agent</b> → <b>Scanner Agent</b> → <b>WCAG Analyst</b> → <b>Fix Recommender</b> → <b>Gemini Critic</b> → <b>Retest Validator</b>'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -163,16 +168,22 @@ with st.sidebar:
         help="Loads the rendered DOM and runs axe-core rules in a Chromium sandbox.",
     )
     st.markdown("---")
-    st.markdown("### \U0001f6e1\ufe0f Built-in Safeguards")
+    st.markdown("### 🤖 Gemini Integration")
+    if is_gemini_available():
+        st.success("✨ **Gemini Critic**: Active (Google Gemini API)")
+    else:
+        st.warning("⚠️ **Gemini Critic**: Not Configured (Falling back to Deterministic)")
+    st.markdown("---")
+    st.markdown("### 🛡️ Built-in Safeguards")
     st.markdown("""
-- \U0001f512 Defense-in-depth SSRF protection
-- \U0001f310 Subresource interception & redirect validation
-- \U0001f9ea Non-destructive isolated sandbox
-- \U0001f504 Adaptive Critic retries (max 3)
-- \U0001f464 Human validation checkpoints
+- 🔒 Defense-in-depth SSRF protection
+- 🌐 Subresource interception & redirect validation
+- 🧪 Non-destructive isolated sandbox
+- 🔄 Adaptive Critic retries (max 3)
+- 👤 Human validation checkpoints
 """)
     st.markdown("---")
-    st.caption("AccessAble AI v2.0 \u00b7 WCAG 2.2 \u00b7 CA-3 Submission")
+    st.caption("AccessAble AI v2.0 · WCAG 2.2 · CA-3 Submission")
 
 # Input Area
 html_to_audit = ""

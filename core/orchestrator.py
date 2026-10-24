@@ -16,6 +16,7 @@ from core.scanner import EnhancedAccessibilityScanner
 from core.browser_scanner import run_browser_audit
 from core.remediation import SandboxRetestEngine, compute_unified_diff
 from core.security import validate_audit_url
+from core.gemini_critic import evaluate_remediations_with_gemini, is_gemini_available
 
 
 class AgentOrchestrator:
@@ -171,6 +172,15 @@ class AgentOrchestrator:
             self.state.remediations = remediations
             self.state.patched_html = patched_html
             self.state.retry_history.extend(retry_records)
+
+            # Gemini Critic integration (Reviews fix quality, WCAG alignment, gives feedback)
+            if is_gemini_available():
+                self.state.log_agent_step(
+                    "Gemini Critic",
+                    f"LLM Evaluation Pass {attempt}",
+                    f"Gemini Critic reviewing {len(remediations)} candidate fixes for WCAG 2.2 alignment."
+                )
+                evaluate_remediations_with_gemini(remediations, self.state.findings)
 
             verified_fixes = [r for r in remediations if r.retest_resolved]
             failed_fixes = [r for r in remediations if not r.retest_resolved]

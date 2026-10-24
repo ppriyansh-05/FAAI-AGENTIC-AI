@@ -9,6 +9,9 @@ node_modules/
 *.log
 *.tmp
 *.db
+.env
+.env.*
+!.env.example
 assets/*.png
 !assets/.gitkeep
 

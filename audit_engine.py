@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
+from dotenv import load_dotenv
+
+load_dotenv()
 from core.models import Finding, AuditState
 from core.orchestrator import AgentOrchestrator
 from core.scanner import calculate_contrast_ratio, EnhancedAccessibilityScanner
