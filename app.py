@@ -4,7 +4,7 @@ import csv, io, json, os
 from datetime import datetime
 from typing import Any
 from dotenv import load_dotenv
-from nicegui import ui
+from nicegui import run, ui
 load_dotenv()
 from audit_engine import findings_to_rows, run_audit
 from benchmark.evaluator import run_benchmark
@@ -129,7 +129,7 @@ async def run_audit() -> None:
         notify("Paste HTML before running an audit.", "warning"); return
     run_button.disable()
     try:
-        result = await ui.run.io_bound(__import__("audit_engine").run_audit, html, bool(browser_toggle.value), target_url)
+        result = await run.io_bound(__import__("audit_engine").run_audit, html, bool(browser_toggle.value), target_url)
         state["result"] = result
         counts = result.get("counts") or {k: sum(fv(f,"severity")==k for f in result.get("findings",[])) for k in ["High","Medium","Low"]}
         total_metric.set_text(str(len(result.get("findings",[]))))
