@@ -1,6 +1,6 @@
 """AccessAble AI NiceGUI glassmorphism interface. Core audit logic remains in core/."""
 from __future__ import annotations
-import csv, io, json, os
+import asyncio, csv, io, json, os
 from datetime import datetime
 from typing import Any
 from dotenv import load_dotenv
@@ -129,7 +129,12 @@ async def run_audit() -> None:
         notify("Paste HTML before running an audit.", "warning"); return
     run_button.disable()
     try:
-        result = await run.io_bound(__import__("audit_engine").run_audit, html, bool(browser_toggle.value), target_url)
+        audit_status.set_text("RUNNING…")
+        # Keep the UI responsive even if a remote service or browser scan stalls.
+        result = await asyncio.wait_for(
+            run.io_bound(__import__("audit_engine").run_audit, html, bool(browser_toggle.value), target_url),
+            timeout=75,
+        )
         state["result"] = result
         counts = result.get("counts") or {k: sum(fv(f,"severity")==k for f in result.get("findings",[])) for k in ["High","Medium","Low"]}
         total_metric.set_text(str(len(result.get("findings",[]))))
@@ -138,7 +143,11 @@ async def run_audit() -> None:
         audit_id.set_text("Audit ID: " + str(result.get("audit_id","—")))
         render_findings(); render_trace(); render_remediation()
         notify("Audit completed." if result.get("status") != "error" else result.get("message","Audit failed."), "positive" if result.get("status") != "error" else "negative")
+    except asyncio.TimeoutError:
+        audit_status.set_text("TIMED OUT")
+        notify("Audit took too long (75 seconds). Try again with browser scanning off, or check the target website.", "negative")
     except Exception as exc:
+        audit_status.set_text("ERROR")
         notify(f"Audit failed: {exc}", "negative")
     finally:
         run_button.enable()
